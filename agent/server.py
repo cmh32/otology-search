@@ -37,7 +37,14 @@ Do not provide personal medical advice.
 You have access to a search_papers tool that queries a PubMed otology database.
 Before answering, call it one or more times with focused keyword queries to retrieve relevant evidence.
 For complex questions, decompose them and search each angle separately.
+Use the structured tool fields deliberately: keywords for the clinical question, MeSH filters when clear, and year filters when recency matters.
+Search broadly first, then narrow if needed.
 Only synthesize your final answer after gathering sufficient literature.
+Internally build an evidence ledger before writing the answer:
+- key claims
+- supporting papers
+- conflicting papers
+- gaps or uncertainty
 Keep the answer to 300 words or less. Be terse. The user may prompt you to dig deeper--that is fine.
 Do not use tables unless the user explicitly asks.
 Do not lean on any prior knoweldge you have — the literature you retrieve is your only source of truth. If you don't find evidence, say so clearly."""
@@ -57,6 +64,27 @@ SEARCH_TOOL = types.Tool(function_declarations=[
                     type="STRING",
                     description="Focused keyword search query",
                 ),
+                "mesh_terms": types.Schema(
+                    type="ARRAY",
+                    items=types.Schema(type="STRING"),
+                    description="Optional PubMed MeSH terms to filter on when known",
+                ),
+                "year_from": types.Schema(
+                    type="INTEGER",
+                    description="Optional lower bound publication year",
+                ),
+                "year_to": types.Schema(
+                    type="INTEGER",
+                    description="Optional upper bound publication year",
+                ),
+                "journal": types.Schema(
+                    type="STRING",
+                    description="Optional exact journal name filter",
+                ),
+                "max_results": types.Schema(
+                    type="INTEGER",
+                    description="Optional number of reranked papers to return (default 8, max 12)",
+                ),
             },
             required=["query"],
         ),
@@ -70,17 +98,54 @@ AGENT_CONFIG = types.GenerateContentConfig(
 FINAL_CONFIG = types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
 
 MAX_TOOL_TURNS = 5
-FETCH_LIMIT = 15   # candidates pulled from Meilisearch
-RERANK_LIMIT = 6   # returned to the model after semantic re-ranking
+FETCH_LIMIT = 60   # candidates pulled from Meilisearch
+RERANK_LIMIT = 12  # returned to the model after semantic re-ranking
 
 
-def fetch_papers(query: str) -> list:
+def _quote_filter(value: str) -> str:
+    return json.dumps(value)
+
+
+def fetch_papers(
+    query: str,
+    mesh_terms: list[str] | None = None,
+    year_from: int | None = None,
+    year_to: int | None = None,
+    journal: str | None = None,
+    limit: int = FETCH_LIMIT,
+) -> list:
     url = f"{MEILI_URL}/indexes/{MEILI_INDEX}/search"
-    payload = json.dumps({
+    filters = []
+    if year_from is not None:
+        filters.append(f"year >= {int(year_from)}")
+    if year_to is not None:
+        filters.append(f"year <= {int(year_to)}")
+    if journal:
+        filters.append(f"journal = {_quote_filter(journal)}")
+    if mesh_terms:
+        quoted = ", ".join(_quote_filter(term) for term in mesh_terms if term)
+        if quoted:
+            filters.append(f"mesh_terms IN [{quoted}]")
+
+    payload_obj = {
         "q": query,
-        "limit": FETCH_LIMIT,
-        "attributesToRetrieve": ["title", "abstract", "authors", "journal", "year", "url"],
-    }).encode()
+        "limit": max(1, min(int(limit or FETCH_LIMIT), FETCH_LIMIT)),
+        "attributesToRetrieve": [
+            "pmid",
+            "title",
+            "abstract",
+            "authors",
+            "journal",
+            "year",
+            "pubdate",
+            "mesh_terms",
+            "url",
+        ],
+    }
+    if filters:
+        payload_obj["filter"] = filters
+
+    payload = json.dumps(payload_obj).encode()
     req = urllib.request.Request(
         url,
         data=payload,
@@ -92,7 +157,7 @@ def fetch_papers(query: str) -> list:
     with urllib.request.urlopen(req) as resp:
         data = json.loads(resp.read())
         hits = data.get("hits", [])
-        print(f"  [meilisearch] '{query}' → {len(hits)} hits")
+        print(f"  [meilisearch] '{query}' filters={filters or 'none'} → {len(hits)} hits")
         return hits
 
 
@@ -107,47 +172,102 @@ def semantic_rerank(query: str, hits: list) -> list:
     if not hits:
         return hits
     try:
-        snippets = [f"{h.get('title', '')} {h.get('abstract', '')[:300]}" for h in hits]
+        snippets = [
+            " ".join(
+                part for part in [
+                    h.get("title", ""),
+                    h.get("abstract", "")[:1200],
+                    " ".join(h.get("mesh_terms", [])[:8]),
+                    h.get("journal", ""),
+                ] if part
+            )
+            for h in hits
+        ]
         embeddings = client.models.embed_content(
             model="text-embedding-004",
             contents=[query] + snippets,
         ).embeddings
         query_emb = embeddings[0].values
-        scored = sorted(
-            zip(hits, embeddings[1:]),
-            key=lambda pair: _cosine(query_emb, pair[1].values),
-            reverse=True,
-        )
-        reranked = [h for h, _ in scored[:RERANK_LIMIT]]
+        query_terms = {term.lower() for term in query.split() if len(term) > 2}
+        scored = []
+        current_year = 2026
+        for hit, emb in zip(hits, embeddings[1:]):
+            semantic_score = _cosine(query_emb, emb.values)
+            title = hit.get("title", "").lower()
+            abstract = hit.get("abstract", "").lower()
+            mesh_terms = [term.lower() for term in hit.get("mesh_terms", [])]
+            lexical_overlap = sum(term in title or term in abstract for term in query_terms)
+            mesh_overlap = sum(term in mesh for term in query_terms for mesh in mesh_terms)
+            year = hit.get("year")
+            recency_boost = 0.0
+            if isinstance(year, int):
+                recency_boost = max(0.0, 1 - min(current_year - year, 15) / 15) * 0.08
+            score = semantic_score + (0.03 * lexical_overlap) + (0.02 * mesh_overlap) + recency_boost
+            enriched = dict(hit)
+            enriched["_score"] = round(score, 4)
+            enriched["_semantic_score"] = round(semantic_score, 4)
+            scored.append(enriched)
+
+        scored.sort(key=lambda hit: hit["_score"], reverse=True)
+        reranked = scored[:RERANK_LIMIT]
         print(f"  [rerank] top result: {reranked[0].get('title', '')[:60]!r}")
         return reranked
     except Exception as e:
         print(f"  [rerank error] {e} — using keyword order")
-        return hits[:RERANK_LIMIT]
+        fallback = []
+        for hit in hits[:RERANK_LIMIT]:
+            enriched = dict(hit)
+            enriched["_score"] = None
+            enriched["_semantic_score"] = None
+            fallback.append(enriched)
+        return fallback
 
 
-def search_and_rerank(query: str) -> str:
-    hits = fetch_papers(query)
+def search_and_rerank(
+    query: str,
+    mesh_terms: list[str] | None = None,
+    year_from: int | None = None,
+    year_to: int | None = None,
+    journal: str | None = None,
+    max_results: int | None = None,
+) -> dict:
+    requested = max(1, min(int(max_results or 8), RERANK_LIMIT))
+    hits = fetch_papers(
+        query=query,
+        mesh_terms=mesh_terms,
+        year_from=year_from,
+        year_to=year_to,
+        journal=journal,
+    )
     hits = semantic_rerank(query, hits)
-    return format_papers(hits)
-
-
-def format_papers(hits: list) -> str:
-    if not hits:
-        return "No papers found."
-    parts = []
+    hits = hits[:requested]
+    papers = []
     for h in hits:
-        authors = ", ".join(h.get("authors", [])[:3])
-        if len(h.get("authors", [])) > 3:
-            authors += " et al."
-        parts.append(
-            f"Title: {h.get('title', '')}\n"
-            f"Authors: {authors}\n"
-            f"Journal: {h.get('journal', '')} ({h.get('year', 'n.d.')})\n"
-            f"URL: {h.get('url', '')}\n"
-            f"Abstract: {h.get('abstract', '')[:500]}"
-        )
-    return "\n\n---\n\n".join(parts)
+        papers.append({
+            "pmid": h.get("pmid"),
+            "title": h.get("title", ""),
+            "authors": h.get("authors", []),
+            "journal": h.get("journal", ""),
+            "year": h.get("year"),
+            "pubdate": h.get("pubdate", ""),
+            "mesh_terms": h.get("mesh_terms", []),
+            "url": h.get("url", ""),
+            "abstract": h.get("abstract", ""),
+            "score": h.get("_score"),
+            "semantic_score": h.get("_semantic_score"),
+        })
+
+    return {
+        "query": query,
+        "filters": {
+            "mesh_terms": mesh_terms or [],
+            "year_from": year_from,
+            "year_to": year_to,
+            "journal": journal,
+        },
+        "count": len(papers),
+        "papers": papers,
+    }
 
 
 @app.after_request
@@ -212,8 +332,23 @@ def chat():
             for part in function_calls:
                 fc = part.function_call
                 query = fc.args.get("query", "")
-                print(f"    → {query!r}")
-                result = search_and_rerank(query)
+                mesh_terms = fc.args.get("mesh_terms") or []
+                year_from = fc.args.get("year_from")
+                year_to = fc.args.get("year_to")
+                journal = fc.args.get("journal")
+                max_results = fc.args.get("max_results")
+                print(
+                    f"    → query={query!r} mesh_terms={mesh_terms!r} "
+                    f"year_from={year_from!r} year_to={year_to!r} journal={journal!r}"
+                )
+                result = search_and_rerank(
+                    query=query,
+                    mesh_terms=mesh_terms,
+                    year_from=year_from,
+                    year_to=year_to,
+                    journal=journal,
+                    max_results=max_results,
+                )
                 tool_parts.append(types.Part(
                     function_response=types.FunctionResponse(
                         name=fc.name,
