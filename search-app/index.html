@@ -1,0 +1,779 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MGT858 Meilisearch starter</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/instantsearch.css@8/themes/satellite-min.css" />
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f7fb;
+        --panel: #ffffff;
+        --text: #1f2937;
+        --muted: #6b7280;
+        --border: #dbe3ef;
+        --accent: #0f766e;
+        --accent-strong: #115e59;
+        --error: #b91c1c;
+        --shadow: 0 8px 30px rgba(15, 23, 42, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: var(--text);
+        background: var(--bg);
+      }
+
+      .page {
+        width: min(1180px, calc(100vw - 2rem));
+        margin: 2rem auto 4rem;
+      }
+
+      .hero {
+        margin-bottom: 1.5rem;
+      }
+
+      .eyebrow {
+        margin: 0 0 0.35rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 0.8rem;
+        color: var(--accent);
+        font-weight: 700;
+      }
+
+      h1,
+      h2,
+      h3,
+      p,
+      pre {
+        margin-top: 0;
+      }
+
+      .lede,
+      .help,
+      .muted {
+        color: var(--muted);
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        box-shadow: var(--shadow);
+        padding: 1rem 1rem 1.25rem;
+        margin-bottom: 1rem;
+      }
+
+      .stack {
+        display: grid;
+        gap: 0.9rem;
+      }
+
+      label {
+        display: grid;
+        gap: 0.35rem;
+        font-weight: 600;
+      }
+
+      input,
+      button {
+        font: inherit;
+      }
+
+      input {
+        width: 100%;
+        padding: 0.75rem 0.85rem;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: #fff;
+      }
+
+      input:focus {
+        outline: 2px solid rgba(15, 118, 110, 0.18);
+        border-color: var(--accent);
+      }
+
+      button {
+        border: 0;
+        border-radius: 10px;
+        padding: 0.75rem 1rem;
+        cursor: pointer;
+        background: var(--accent);
+        color: white;
+        font-weight: 600;
+      }
+
+      button:hover {
+        background: var(--accent-strong);
+      }
+
+      button.secondary,
+      .ais-ClearRefinements-button,
+      .ais-Pagination-link {
+        background: #e5e7eb;
+        color: var(--text);
+      }
+
+      button.secondary:hover,
+      .ais-ClearRefinements-button:hover,
+      .ais-Pagination-link:hover {
+        background: #d1d5db;
+      }
+
+      .row,
+      .toolbar {
+        display: flex;
+        gap: 0.75rem;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .toolbar {
+        justify-content: space-between;
+        margin-top: 0.85rem;
+      }
+
+      .status {
+        margin-top: 0.85rem;
+      }
+
+      .error {
+        color: var(--error);
+        font-weight: 600;
+      }
+
+      .empty-state {
+        border: 1px dashed var(--border);
+        border-radius: 12px;
+        padding: 1rem;
+        margin-top: 1rem;
+        background: #fbfdff;
+      }
+
+      #search-app {
+        margin-top: 1rem;
+      }
+
+      #searchbox {
+        margin-bottom: 1rem;
+      }
+
+      #searchbox .ais-SearchBox-form {
+        border-radius: 12px;
+      }
+
+      #searchbox .ais-SearchBox-input {
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        box-shadow: none;
+      }
+
+      .search-layout {
+        display: grid;
+        grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+        gap: 1rem;
+        align-items: start;
+      }
+
+      .facets-pane {
+        position: sticky;
+        top: 1rem;
+        padding: 1rem;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #fbfdff;
+      }
+
+      .facets-pane h3 {
+        margin-bottom: 0.75rem;
+      }
+
+      #facets .ais-Panel {
+        margin-bottom: 0.9rem;
+      }
+
+      #facets .ais-Panel-header {
+        margin-bottom: 0.35rem;
+        font-weight: 700;
+      }
+
+      #facets .ais-SearchBox-input {
+        padding: 0.5rem 0.6rem;
+      }
+
+      #stats {
+        color: var(--muted);
+      }
+
+      #current-refinements,
+      #pagination,
+      #hits {
+        margin-top: 1rem;
+      }
+
+      #current-refinements .ais-CurrentRefinements-item {
+        background: #ecfeff;
+        border: 1px solid #bae6fd;
+        border-radius: 999px;
+        padding: 0.15rem 0.5rem;
+      }
+
+      #hits .ais-Hits-list {
+        list-style: none;
+        display: grid;
+        gap: 0.9rem;
+        margin: 0;
+        padding: 0;
+      }
+
+      #pagination .ais-Pagination-list {
+        gap: 0.35rem;
+      }
+
+      #pagination .ais-Pagination-item,
+      #pagination .ais-Pagination-link {
+        border-radius: 10px;
+      }
+
+      .result-card {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 1rem;
+        background: #fff;
+      }
+
+      .result-title {
+        margin: 0 0 0.35rem;
+        font-size: 1.05rem;
+      }
+
+      .result-title a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      .result-title a:hover {
+        text-decoration: underline;
+      }
+
+      .result-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin: 0.6rem 0;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.2rem 0.55rem;
+        border-radius: 999px;
+        background: #ecfeff;
+        color: #155e75;
+        font-size: 0.85rem;
+        border: 1px solid #bae6fd;
+      }
+
+      .badge b {
+        margin-right: 0.25rem;
+      }
+
+      details {
+        margin-top: 0.75rem;
+      }
+
+      summary {
+        cursor: pointer;
+        color: var(--muted);
+      }
+
+      pre {
+        overflow-x: auto;
+        background: #0f172a;
+        color: #e2e8f0;
+        border-radius: 10px;
+        padding: 0.75rem;
+        font-size: 0.85rem;
+        margin-top: 0.5rem;
+      }
+
+      mark {
+        background: #fef08a;
+        padding: 0 0.1rem;
+      }
+
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+
+      @media (max-width: 900px) {
+        .search-layout {
+          grid-template-columns: 1fr;
+        }
+
+        .facets-pane {
+          position: static;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .page {
+          width: min(100vw - 1rem, 960px);
+          margin-top: 1rem;
+        }
+
+        .panel {
+          padding: 0.9rem;
+        }
+
+        .toolbar {
+          align-items: flex-start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header class="hero">
+        <p class="eyebrow">MGT858 starter</p>
+        <h1>Static search app</h1>
+        <p class="lede">
+          A single-file browser app for your hosted Meilisearch index.
+        </p>
+      </header>
+
+      <section class="panel">
+        <h2>Connection</h2>
+        <p class="help">
+          Paste the values from your dashboard. Use a <strong>search-only</strong>
+          key in the browser.
+        </p>
+        <form id="config-form" class="stack">
+          <label>
+            <span>Meilisearch URL</span>
+            <input id="host" name="host" type="url" placeholder="http://search.858.mba:7700" required />
+          </label>
+
+          <label>
+            <span>Index name</span>
+            <input id="index" name="index" type="text" placeholder="fts-bald-chicken" required />
+          </label>
+
+          <label>
+            <span>Search-only API key</span>
+            <input id="key" name="key" type="password" placeholder="search-only key" required />
+          </label>
+
+          <div class="row">
+            <button type="submit">Save connection</button>
+            <button type="button" id="clear-config" class="secondary">Clear saved values</button>
+          </div>
+        </form>
+        <p id="connection-status" class="status muted">No connection saved yet.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Search</h2>
+        <div class="toolbar">
+          <p id="results-meta" class="muted">Save a connection to enable the search UI.</p>
+          <p id="error-message" class="error" hidden></p>
+        </div>
+
+        <div id="search-disabled" class="empty-state">
+          <p>The search UI will appear here after you save a valid connection.</p>
+          <p class="muted">
+            If your index is empty, upload documents first with your write key from the command line.
+          </p>
+        </div>
+
+        <div id="search-app" hidden>
+          <div id="searchbox"></div>
+          <div class="search-layout">
+            <aside class="facets-pane">
+              <h3>Customize this app</h3>
+              <p class="muted">
+                This starter makes a generic best effort on titles, snippets, and metadata.
+                If you want schema-specific filters or prettier cards, edit this file.
+              </p>
+              <p class="muted">
+                A common next step is adding widgets such as <code>refinementList</code>
+                for fields like <code>category</code>, <code>tags</code>, <code>author</code>,
+                or whatever your data uses.
+              </p>
+              <div id="custom-filters"></div>
+            </aside>
+
+            <section>
+              <div class="toolbar search-toolbar">
+                <div id="stats"></div>
+                <div id="clear-refinements"></div>
+              </div>
+              <div id="current-refinements"></div>
+              <div id="hits"></div>
+              <div id="pagination"></div>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/instantsearch.js@4/dist/instantsearch.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@meilisearch/instant-meilisearch@0/dist/instant-meilisearch.umd.min.js"></script>
+    <script>
+      (function () {
+        const storageKey = 'mgt858-meili-search-app';
+        const configForm = document.querySelector('#config-form');
+        const hostInput = document.querySelector('#host');
+        const indexInput = document.querySelector('#index');
+        const keyInput = document.querySelector('#key');
+        const connectionStatus = document.querySelector('#connection-status');
+        const resultsMeta = document.querySelector('#results-meta');
+        const errorMessage = document.querySelector('#error-message');
+        const clearConfigButton = document.querySelector('#clear-config');
+        const searchApp = document.querySelector('#search-app');
+        const searchDisabled = document.querySelector('#search-disabled');
+        const params = new URLSearchParams(window.location.search);
+        const queryFromUrl = params.get('q') ?? '';
+
+        hydrateConfig();
+        const config = readConfig();
+        renderConnectionStatus(config);
+        if (hasCompleteConfig(config)) {
+          startSearch(config);
+        }
+
+        configForm.addEventListener('submit', function (event) {
+          event.preventDefault();
+          const nextConfig = {
+            host: normalizeHost(hostInput.value),
+            index: indexInput.value.trim(),
+            key: keyInput.value.trim(),
+          };
+          localStorage.setItem(storageKey, JSON.stringify(nextConfig));
+          window.location.reload();
+        });
+
+        clearConfigButton.addEventListener('click', function () {
+          localStorage.removeItem(storageKey);
+          window.location.reload();
+        });
+
+        function hydrateConfig() {
+          const currentConfig = readConfig();
+          hostInput.value = currentConfig.host ?? '';
+          indexInput.value = currentConfig.index ?? '';
+          keyInput.value = currentConfig.key ?? '';
+        }
+
+        function readConfig() {
+          const saved = readSavedConfig();
+          const fromUrl = {
+            host: normalizeHost(params.get('host') ?? ''),
+            index: (params.get('index') ?? '').trim(),
+            key: (params.get('key') ?? '').trim(),
+          };
+
+          return {
+            host: fromUrl.host || saved.host || '',
+            index: fromUrl.index || saved.index || '',
+            key: fromUrl.key || saved.key || '',
+          };
+        }
+
+        function readSavedConfig() {
+          try {
+            const raw = localStorage.getItem(storageKey);
+            return raw ? JSON.parse(raw) : {};
+          } catch (_error) {
+            return {};
+          }
+        }
+
+        function hasCompleteConfig(currentConfig) {
+          return Boolean(currentConfig.host && currentConfig.index && currentConfig.key);
+        }
+
+        function normalizeHost(value) {
+          return value.trim().replace(/\/$/, '');
+        }
+
+        function renderConnectionStatus(currentConfig) {
+          if (!hasCompleteConfig(currentConfig)) {
+            connectionStatus.textContent = 'No connection saved yet.';
+            connectionStatus.classList.add('muted');
+            return;
+          }
+          connectionStatus.textContent = `Ready to search ${currentConfig.index} at ${currentConfig.host}`;
+          connectionStatus.classList.remove('muted');
+        }
+
+        function startSearch(currentConfig) {
+          clearError();
+          searchDisabled.hidden = true;
+          searchApp.hidden = false;
+          resultsMeta.textContent = 'InstantSearch is ready.';
+
+          try {
+            const searchClientConfig = window.instantMeiliSearch(currentConfig.host, currentConfig.key, {
+              primaryKey: 'id',
+            });
+
+            const search = window.instantsearch({
+              indexName: currentConfig.index,
+              searchClient: searchClientConfig.searchClient,
+              initialUiState: queryFromUrl
+                ? {
+                    [currentConfig.index]: {
+                      query: queryFromUrl,
+                    },
+                  }
+                : undefined,
+            });
+
+            const widgets = window.instantsearch.widgets;
+            const searchWidgets = [
+              widgets.configure({
+                hitsPerPage: 10,
+                facets: ['*'],
+                maxValuesPerFacet: 12,
+                attributesToHighlight: ['*'],
+                highlightPreTag: '<mark>',
+                highlightPostTag: '</mark>',
+              }),
+              widgets.searchBox({
+                container: '#searchbox',
+                placeholder: 'Try: finance, climate, marketing, recipes, professors',
+                showReset: true,
+                showSubmit: true,
+                autofocus: Boolean(queryFromUrl),
+              }),
+              widgets.stats({
+                container: '#stats',
+                templates: {
+                  text: function (data) {
+                    return `${data.nbHits} result${data.nbHits === 1 ? '' : 's'} in ${data.processingTimeMS} ms`;
+                  },
+                },
+              }),
+              widgets.clearRefinements({
+                container: '#clear-refinements',
+                templates: {
+                  resetLabel: 'Clear search state',
+                },
+              }),
+              widgets.currentRefinements({
+                container: '#current-refinements',
+              }),
+              widgets.hits({
+                container: '#hits',
+                templates: {
+                  empty: function (_results, renderOptions) {
+                    return renderOptions.html`
+                      <div class="empty-state">
+                        <p>No results yet.</p>
+                        <p class="muted">
+                          If your index is empty, upload documents first with your write key from the command line.
+                        </p>
+                      </div>
+                    `;
+                  },
+                  item: function (hit) {
+                    return renderHit(hit);
+                  },
+                },
+              }),
+              widgets.pagination({
+                container: '#pagination',
+                padding: 1,
+              }),
+            ];
+
+            // Want schema-specific filters? Add widgets here. For example:
+            // searchWidgets.splice(4, 0,
+            //   widgets.panel({ templates: { header: 'Category' } })(
+            //     widgets.refinementList({ container: '#custom-filters', attribute: 'category' })
+            //   )
+            // );
+
+            search.addWidgets(searchWidgets);
+            search.on('render', function () {
+              clearError();
+              const statsText = document.querySelector('#stats').textContent?.trim();
+              if (statsText) {
+                resultsMeta.textContent = statsText;
+              }
+            });
+            search.start();
+          } catch (error) {
+            showError(error.message || String(error));
+            searchApp.hidden = true;
+            searchDisabled.hidden = false;
+          }
+        }
+
+        function renderHit(hit) {
+          const formatted = hit._formatted ?? {};
+          const title = pickHighlightedValue(formatted, hit, ['title', 'name', 'headline', 'courseTitle'])
+            || buildCompositeTitle(hit)
+            || escapeHtml(String(hit.id ?? 'Untitled result'));
+          const description = pickHighlightedValue(formatted, hit, ['description', 'summary', 'abstract', 'body', 'text', 'content'])
+            || buildAdaptiveDescription(hit);
+          const url = pickRawValue(hit, ['url', 'link', 'website', 'homepage']) || '';
+          const metadataBadges = renderMetadataBadges(hit);
+          const rawPreview = renderRawPreview(hit);
+
+          const titleMarkup = url
+            ? `<a href="${escapeAttribute(url)}" target="_blank" rel="noreferrer">${title}</a>`
+            : title;
+
+          return `
+            <article class="result-card">
+              <h3 class="result-title">${titleMarkup}</h3>
+              ${description ? `<p>${description}</p>` : ''}
+              ${metadataBadges}
+              <p class="muted"><code>${escapeHtml(String(hit.id ?? ''))}</code></p>
+              ${rawPreview}
+            </article>
+          `;
+        }
+
+        function buildCompositeTitle(hit) {
+          const number = pickRawValue(hit, ['courseNumber', 'number']);
+          const title = pickRawValue(hit, ['courseTitle', 'title', 'name']);
+          if (number && title && String(number) !== String(title)) {
+            return `${escapeHtml(String(number))} — ${escapeHtml(String(title))}`;
+          }
+          return title ? escapeHtml(String(title)) : '';
+        }
+
+        function buildAdaptiveDescription(hit) {
+          const pairs = [];
+          const fields = ['category', 'type', 'courseCategory', 'courseType', 'courseSession', 'term', 'author', 'creator', 'section', 'units'];
+          for (const field of fields) {
+            const value = hit[field];
+            if (typeof value === 'string' && value.trim()) {
+              pairs.push(`${prettify(field)}: ${escapeHtml(value)}`);
+            }
+          }
+          return pairs.slice(0, 4).join('. ');
+        }
+
+        function renderMetadataBadges(hit) {
+          const excluded = new Set([
+            'id', 'title', 'name', 'headline', 'courseTitle', 'description', 'summary', 'abstract',
+            'body', 'text', 'content', 'url', 'link', 'website', 'homepage', '_formatted',
+            '_matchesPosition', '_rankingScore', '_rankingScoreDetails', '_geoDistance', '_federation', '_vectors'
+          ]);
+          const badges = [];
+
+          Object.entries(hit).forEach(function ([key, value]) {
+            if (excluded.has(key)) {
+              return;
+            }
+            if (value === null || value === undefined || value === '' || value === 'comment') {
+              return;
+            }
+            if (Array.isArray(value)) {
+              value.slice(0, 4).forEach(function (item) {
+                if (typeof item === 'string' && item.trim()) {
+                  badges.push(`<span class="badge"><b>${escapeHtml(prettify(key))}:</b>${escapeHtml(item)}</span>`);
+                }
+              });
+              return;
+            }
+            if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+              const text = String(value);
+              if (text.length <= 40) {
+                badges.push(`<span class="badge"><b>${escapeHtml(prettify(key))}:</b>${escapeHtml(text)}</span>`);
+              }
+            }
+          });
+
+          return badges.length ? `<div class="result-meta">${badges.slice(0, 10).join('')}</div>` : '';
+        }
+
+        function renderRawPreview(hit) {
+          const preview = { ...hit };
+          delete preview._formatted;
+          delete preview._matchesPosition;
+          delete preview._rankingScore;
+          delete preview._rankingScoreDetails;
+          delete preview._geoDistance;
+          delete preview._federation;
+          delete preview._vectors;
+          const json = JSON.stringify(preview, null, 2);
+          if (!json || json.length < 3) {
+            return '';
+          }
+          const trimmed = json.length > 1600 ? `${json.slice(0, 1600)}\n…` : json;
+          return `<details><summary>Show raw document</summary><pre>${escapeHtml(trimmed)}</pre></details>`;
+        }
+
+        function pickHighlightedValue(formatted, raw, fields) {
+          for (const field of fields) {
+            const highlighted = formatted[field];
+            if (typeof highlighted === 'string' && highlighted.trim()) {
+              return highlighted;
+            }
+            const plain = raw[field];
+            if (typeof plain === 'string' && plain.trim()) {
+              return escapeHtml(plain);
+            }
+          }
+          return '';
+        }
+
+        function pickRawValue(raw, fields) {
+          for (const field of fields) {
+            const value = raw[field];
+            if (typeof value === 'string' && value.trim()) {
+              return value;
+            }
+          }
+          return '';
+        }
+
+        function prettify(value) {
+          return String(value)
+            .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+            .replace(/[_-]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/^./, function (char) {
+              return char.toUpperCase();
+            });
+        }
+
+        function showError(message) {
+          errorMessage.hidden = false;
+          errorMessage.textContent = message;
+        }
+
+        function clearError() {
+          errorMessage.hidden = true;
+          errorMessage.textContent = '';
+        }
+
+        function escapeHtml(value) {
+          return String(value)
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll("'", '&#39;');
+        }
+
+        function escapeAttribute(value) {
+          return escapeHtml(value);
+        }
+      })();
+    </script>
+  </body>
+</html>
