@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MGT858 Meilisearch starter</title>
+    <title>PubMed Otology Search</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/instantsearch.css@8/themes/satellite-min.css" />
     <style>
       :root {
@@ -374,6 +374,24 @@
         padding: 0 0.1rem;
       }
 
+      .result-authors {
+        margin: 0.2rem 0 0.25rem;
+        font-size: 0.88rem;
+        color: var(--muted);
+      }
+
+      .result-journal {
+        margin: 0 0 0.5rem;
+        font-size: 0.85rem;
+        color: var(--accent);
+      }
+
+      .result-abstract {
+        margin: 0.4rem 0 0.5rem;
+        font-size: 0.95rem;
+        line-height: 1.55;
+      }
+
       code {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
@@ -407,10 +425,10 @@
   <body>
     <main class="page">
       <header class="hero">
-        <p class="eyebrow">MGT858 starter</p>
-        <h1>Static search app</h1>
+        <p class="eyebrow">MGT858 · PubMed Otology</p>
+        <h1>Otology Literature Search</h1>
         <p class="lede">
-          A single-file browser app for your hosted Meilisearch index.
+          Full-text search over 2,000 PubMed otology papers — filter by MeSH term, year, or journal.
         </p>
       </header>
 
@@ -601,13 +619,16 @@
                 hitsPerPage: 10,
                 facets: ['*'],
                 maxValuesPerFacet: 12,
-                attributesToHighlight: ['*'],
+                attributesToHighlight: ['title', 'abstract', 'authors', 'mesh_terms'],
+                attributesToCrop: ['abstract'],
+                cropLength: 50,
+                cropMarker: '…',
                 highlightPreTag: '<mark>',
                 highlightPostTag: '</mark>',
               }),
               widgets.searchBox({
                 container: '#searchbox',
-                placeholder: 'Try: finance, climate, marketing, recipes, professors',
+                placeholder: 'Try: cochlear implant, tinnitus, Meniere, vertigo, hearing loss',
                 showReset: true,
                 showSubmit: true,
                 autofocus: Boolean(queryFromUrl),
@@ -699,15 +720,33 @@
 
         function renderHit(hit) {
           const formatted = hit._formatted ?? {};
-          const title = pickHighlightedValue(formatted, hit, ['title', 'name', 'headline', 'courseTitle'])
-            || buildCompositeTitle(hit)
-            || escapeHtml(String(hit.id ?? 'Untitled result'));
-          const description = pickHighlightedValue(formatted, hit, ['description', 'summary', 'abstract', 'body', 'text', 'content'])
-            || buildAdaptiveDescription(hit);
-          const url = pickRawValue(hit, ['url', 'link', 'website', 'homepage']) || '';
-          const metadataBadges = renderMetadataBadges(hit);
-          const rawPreview = renderRawPreview(hit);
 
+          const title = (typeof formatted.title === 'string' && formatted.title.trim())
+            ? formatted.title
+            : escapeHtml(String(hit.title ?? 'Untitled'));
+
+          const abstract = (typeof formatted.abstract === 'string' && formatted.abstract.trim())
+            ? formatted.abstract
+            : hit.abstract
+              ? escapeHtml(hit.abstract.slice(0, 400)) + (hit.abstract.length > 400 ? '…' : '')
+              : '';
+
+          const authors = Array.isArray(hit.authors) && hit.authors.length
+            ? escapeHtml(hit.authors.join(', '))
+            : '';
+
+          const metaParts = [];
+          if (hit.journal) metaParts.push(`<em>${escapeHtml(String(hit.journal))}</em>`);
+          if (hit.year) metaParts.push(escapeHtml(String(hit.year)));
+          const metaLine = metaParts.join(' · ');
+
+          const meshTerms = Array.isArray(hit.mesh_terms)
+            ? hit.mesh_terms.slice(0, 6).map(function (t) {
+                return `<span class="badge">${escapeHtml(String(t))}</span>`;
+              }).join('')
+            : '';
+
+          const url = typeof hit.url === 'string' ? hit.url : '';
           const titleMarkup = url
             ? `<a href="${escapeAttribute(url)}" target="_blank" rel="noreferrer">${title}</a>`
             : title;
@@ -715,10 +754,11 @@
           return `
             <article class="result-card">
               <h3 class="result-title">${titleMarkup}</h3>
-              ${description ? `<p>${description}</p>` : ''}
-              ${metadataBadges}
-              <p class="muted"><code>${escapeHtml(String(hit.id ?? ''))}</code></p>
-              ${rawPreview}
+              ${authors ? `<p class="result-authors">${authors}</p>` : ''}
+              ${metaLine ? `<p class="result-journal">${metaLine}</p>` : ''}
+              ${abstract ? `<p class="result-abstract">${abstract}</p>` : ''}
+              ${meshTerms ? `<div class="result-meta">${meshTerms}</div>` : ''}
+              <p class="muted"><code>PMID ${escapeHtml(String(hit.pmid ?? hit.id ?? ''))}</code></p>
             </article>
           `;
         }
@@ -746,9 +786,10 @@
 
         function renderMetadataBadges(hit) {
           const excluded = new Set([
-            'id', 'title', 'name', 'headline', 'courseTitle', 'description', 'summary', 'abstract',
-            'body', 'text', 'content', 'url', 'link', 'website', 'homepage', '_formatted',
-            '_matchesPosition', '_rankingScore', '_rankingScoreDetails', '_geoDistance', '_federation', '_vectors'
+            'id', 'pmid', 'title', 'name', 'headline', 'courseTitle', 'description', 'summary', 'abstract',
+            'body', 'text', 'content', 'url', 'link', 'website', 'homepage',
+            'authors', 'journal', 'year', 'pubdate', 'mesh_terms',
+            '_formatted', '_matchesPosition', '_rankingScore', '_rankingScoreDetails', '_geoDistance', '_federation', '_vectors'
           ]);
           const badges = [];
 
