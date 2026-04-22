@@ -166,7 +166,7 @@ def build_document(summary: dict, abstracts: dict, mesh_by_pmid: dict) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="Fetch ear/otology articles from PubMed.")
-    parser.add_argument("--max", type=int, default=2000, help="Max articles to fetch (default 2000)")
+    parser.add_argument("--max", type=int, default=10000, help="Max articles to fetch (default 2000)")
     parser.add_argument("--output", default="my-data/pubmed-otology.json", help="Output JSON path")
     parser.add_argument("--no-abstracts", action="store_true", help="Skip abstract/MeSH fetching (faster)")
     args = parser.parse_args()
