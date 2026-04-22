@@ -87,12 +87,17 @@
         font: inherit;
       }
 
-      input {
+      input:not([type="checkbox"]) {
         width: 100%;
         padding: 0.75rem 0.85rem;
         border-radius: 10px;
         border: 1px solid var(--border);
         background: #fff;
+      }
+
+      input[type="checkbox"] {
+        width: auto;
+        flex-shrink: 0;
       }
 
       input:focus {
@@ -177,7 +182,7 @@
 
       .search-layout {
         display: grid;
-        grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+        grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
         gap: 1rem;
         align-items: start;
       }
@@ -195,17 +200,77 @@
         margin-bottom: 0.75rem;
       }
 
-      #facets .ais-Panel {
-        margin-bottom: 0.9rem;
+      #facets .ais-Panel,
+      .facets-pane .ais-Panel {
+        margin-bottom: 1.1rem;
       }
 
-      #facets .ais-Panel-header {
-        margin-bottom: 0.35rem;
+      #facets .ais-Panel-header,
+      .facets-pane .ais-Panel-header {
+        margin-bottom: 0.5rem;
         font-weight: 700;
+        font-size: 0.8rem;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--muted);
       }
 
-      #facets .ais-SearchBox-input {
-        padding: 0.5rem 0.6rem;
+      #facets .ais-SearchBox-input,
+      .facets-pane .ais-SearchBox-input {
+        padding: 0.4rem 0.6rem;
+        font-size: 0.85rem;
+        margin-bottom: 0.4rem;
+      }
+
+      .facets-pane .ais-RefinementList-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+
+      .facets-pane .ais-RefinementList-item {
+        display: flex;
+        align-items: baseline;
+        gap: 0.4rem;
+        padding: 0.2rem 0;
+        font-size: 0.9rem;
+        cursor: pointer;
+      }
+
+      .facets-pane .ais-RefinementList-label {
+        display: flex;
+        align-items: baseline;
+        gap: 0.4rem;
+        width: 100%;
+        cursor: pointer;
+      }
+
+      .facets-pane .ais-RefinementList-labelText {
+        flex: 1;
+        word-break: break-word;
+      }
+
+      .facets-pane .ais-RefinementList-count {
+        font-size: 0.75rem;
+        background: #e0f2fe;
+        color: #0369a1;
+        border-radius: 999px;
+        padding: 0.05rem 0.45rem;
+        white-space: nowrap;
+      }
+
+      .facets-pane .ais-RefinementList-item--selected .ais-RefinementList-labelText {
+        font-weight: 600;
+      }
+
+      .facets-pane .ais-ShowMoreButton {
+        margin-top: 0.4rem;
+        font-size: 0.8rem;
+        color: #0369a1;
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 0;
       }
 
       #stats {
@@ -397,16 +462,9 @@
           <div id="searchbox"></div>
           <div class="search-layout">
             <aside class="facets-pane">
-              <h3>Customize this app</h3>
-              <p class="muted">
-                This starter makes a generic best effort on titles, snippets, and metadata.
-                If you want schema-specific filters or prettier cards, edit this file.
-              </p>
-              <p class="muted">
-                A common next step is adding widgets such as <code>refinementList</code>
-                for fields like <code>category</code>, <code>tags</code>, <code>author</code>,
-                or whatever your data uses.
-              </p>
+              <div id="filter-mesh"></div>
+              <div id="filter-year"></div>
+              <div id="filter-journal"></div>
               <div id="custom-filters"></div>
             </aside>
 
@@ -595,12 +653,33 @@
               }),
             ];
 
-            // Want schema-specific filters? Add widgets here. For example:
-            // searchWidgets.splice(4, 0,
-            //   widgets.panel({ templates: { header: 'Category' } })(
-            //     widgets.refinementList({ container: '#custom-filters', attribute: 'category' })
-            //   )
-            // );
+            searchWidgets.splice(4, 0,
+              widgets.panel({ templates: { header: 'MeSH Terms' } })(widgets.refinementList)({
+                container: '#filter-mesh',
+                attribute: 'mesh_terms',
+                limit: 10,
+                showMore: true,
+                searchable: true,
+                searchablePlaceholder: 'Search topics…',
+                sortBy: ['count:desc', 'name:asc'],
+              }),
+              widgets.panel({ templates: { header: 'Year' } })(widgets.refinementList)({
+                container: '#filter-year',
+                attribute: 'year',
+                limit: 10,
+                showMore: true,
+                sortBy: ['name:desc'],
+              }),
+              widgets.panel({ templates: { header: 'Journal' } })(widgets.refinementList)({
+                container: '#filter-journal',
+                attribute: 'journal',
+                limit: 8,
+                showMore: true,
+                searchable: true,
+                searchablePlaceholder: 'Search journals…',
+                sortBy: ['count:desc', 'name:asc'],
+              })
+            );
 
             search.addWidgets(searchWidgets);
             search.on('render', function () {
