@@ -220,10 +220,11 @@
 
     const bubble = document.createElement('div');
     bubble.className = `bubble ${role}`;
+    const text = typeof html === 'string' ? html : String(html ?? '');
     if (isMarkdown) {
-      bubble.innerHTML = marked.parse(html);
+      bubble.innerHTML = marked.parse(text);
     } else {
-      bubble.textContent = html;
+      bubble.textContent = text;
     }
 
     row.append(avatar, bubble);
@@ -288,13 +289,17 @@
         throw new Error(err.error || `HTTP ${res.status}`);
       }
 
-      const { reply } = await res.json();
+      const data = await res.json();
+      const reply = typeof data.reply === 'string' ? data.reply : data.error;
+      if (!reply) {
+        throw new Error('Server returned no reply');
+      }
       removeThinking();
       addBubble('ai', reply, true);
       messages.push({ role: 'assistant', content: reply });
     } catch (err) {
       removeThinking();
-      addBubble('ai', `Error: ${err.message}. Is the server running?`, false);
+      addBubble('ai', `Error: ${err.message}`, false);
     } finally {
       sendBtn.disabled = false;
       inputEl.focus();
