@@ -158,6 +158,7 @@ FETCH_LIMIT = 60   # candidates pulled from Meilisearch
 RERANK_LIMIT = 12  # returned to the model after semantic re-ranking
 EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_RETRY_DELAY_SECONDS = 2
+MIN_FILTERED_HITS = 3
 
 OUT_OF_SCOPE_TERMS = {
     "rhinosinusitis",
@@ -174,6 +175,44 @@ OUT_OF_SCOPE_TERMS = {
 
 URL_PATTERN = re.compile(r"https://pubmed\.ncbi\.nlm\.nih\.gov/\d+/?")
 
+QUERY_EXPANSIONS = {
+    "ssnhl": "sudden sensorineural hearing loss",
+    "shl": "sudden hearing loss",
+    "ome": "otitis media with effusion",
+    "aom": "acute otitis media",
+    "raom": "recurrent acute otitis media",
+    "bppv": "benign paroxysmal positional vertigo",
+    "vemp": "vestibular evoked myogenic potential",
+    "ct": "computed tomography",
+    "mri": "magnetic resonance imaging",
+    "cwu": "canal wall up",
+    "cwd": "canal wall down",
+}
+
+GUIDELINE_INTENT_TERMS = {
+    "current",
+    "guideline",
+    "guidelines",
+    "recommend",
+    "recommendations",
+    "indications",
+    "management",
+    "standard",
+}
+
+EVIDENCE_INTENT_TERMS = {
+    "evidence",
+    "systematic",
+    "meta-analysis",
+    "meta",
+    "trial",
+    "randomized",
+    "versus",
+    "vs",
+    "compare",
+    "comparison",
+}
+
 
 def _quote_filter(value: str) -> str:
     return json.dumps(value)
@@ -182,6 +221,63 @@ def _quote_filter(value: str) -> str:
 def is_out_of_scope(message: str) -> bool:
     normalized = message.lower()
     return any(term in normalized for term in OUT_OF_SCOPE_TERMS)
+
+
+def expand_query_variants(query: str, publication_types: list[str] | None = None) -> list[str]:
+    normalized = query.lower()
+    variants = [query]
+
+    expanded_terms = []
+    for short, long in QUERY_EXPANSIONS.items():
+        if re.search(rf"\b{re.escape(short)}\b", normalized) and long not in normalized:
+            expanded_terms.append(long)
+    if expanded_terms:
+        variants.append(f"{query} {' '.join(expanded_terms)}")
+
+    terms = set(re.findall(r"[a-z0-9-]+", normalized))
+    pub_types = {pub_type.lower() for pub_type in publication_types or []}
+    if terms & GUIDELINE_INTENT_TERMS or {"practice guideline", "guideline"} & pub_types:
+        for suffix in [
+            "clinical practice guideline consensus statement",
+            "AAO-HNS guideline",
+        ]:
+            if suffix.lower() not in normalized:
+                variants.append(f"{query} {suffix}")
+
+    if terms & EVIDENCE_INTENT_TERMS or {"systematic review", "meta-analysis", "randomized controlled trial"} & pub_types:
+        for suffix in [
+            "systematic review meta-analysis randomized trial",
+            "Cochrane review",
+        ]:
+            if suffix.lower() not in normalized:
+                variants.append(f"{query} {suffix}")
+
+    deduped = []
+    seen = set()
+    for variant in variants:
+        compact = " ".join(variant.split())
+        key = compact.lower()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(compact)
+    return deduped[:4]
+
+
+def merge_ranked_hits(hit_sets: list[tuple[str, list]]) -> list:
+    merged = {}
+    for query_index, (variant, hits) in enumerate(hit_sets):
+        query_weight = 1.0 / (query_index + 1)
+        for rank, hit in enumerate(hits, start=1):
+            pmid = hit.get("pmid") or hit.get("id") or f"{variant}:{rank}"
+            contribution = query_weight / (60 + rank)
+            if pmid not in merged:
+                enriched = dict(hit)
+                enriched["_rrf_score"] = 0.0
+                enriched["_matched_queries"] = []
+                merged[pmid] = enriched
+            merged[pmid]["_rrf_score"] += contribution
+            merged[pmid]["_matched_queries"].append(variant)
+    return sorted(merged.values(), key=lambda hit: hit.get("_rrf_score", 0.0), reverse=True)
 
 
 def fetch_papers(
@@ -300,6 +396,7 @@ def semantic_rerank(query: str, hits: list) -> list:
                 + (0.03 * lexical_overlap)
                 + (0.02 * mesh_overlap)
                 + (0.04 * publication_type_overlap)
+                + (2.0 * hit.get("_rrf_score", 0.0))
                 + recency_boost
             )
             enriched = dict(hit)
@@ -349,14 +446,53 @@ def search_and_rerank(
     skip_rerank: bool = False,
 ) -> dict:
     requested = max(1, min(int(max_results or 10), RERANK_LIMIT))
-    hits = fetch_papers(
-        query=query,
-        mesh_terms=mesh_terms,
-        publication_types=publication_types,
-        year_from=year_from,
-        year_to=year_to,
-        journal=journal,
-    )
+    query_variants = expand_query_variants(query, publication_types)
+    hit_sets = []
+    recovery_notes = []
+    for variant in query_variants:
+        variant_hits = fetch_papers(
+            query=variant,
+            mesh_terms=mesh_terms,
+            publication_types=publication_types,
+            year_from=year_from,
+            year_to=year_to,
+            journal=journal,
+        )
+        hit_sets.append((variant, variant_hits))
+
+    filtered_hit_count = sum(len(hits) for _, hits in hit_sets)
+    if filtered_hit_count < MIN_FILTERED_HITS and (mesh_terms or publication_types or journal):
+        relaxed_parts = []
+        relaxed_mesh_terms = mesh_terms
+        relaxed_publication_types = publication_types
+        relaxed_journal = journal
+        if journal:
+            relaxed_journal = None
+            relaxed_parts.append("journal")
+        elif mesh_terms:
+            relaxed_mesh_terms = None
+            relaxed_parts.append("mesh_terms")
+        elif publication_types:
+            relaxed_publication_types = None
+            relaxed_parts.append("publication_types")
+
+        if relaxed_parts:
+            recovery_notes.append(
+                f"Only {filtered_hit_count} filtered hit(s); retried without {', '.join(relaxed_parts)}."
+            )
+            print(f"  [recovery] {recovery_notes[-1]}")
+            for variant in query_variants:
+                relaxed_hits = fetch_papers(
+                    query=variant,
+                    mesh_terms=relaxed_mesh_terms,
+                    publication_types=relaxed_publication_types,
+                    year_from=year_from,
+                    year_to=year_to,
+                    journal=relaxed_journal,
+                )
+                hit_sets.append((variant, relaxed_hits))
+
+    hits = merge_ranked_hits(hit_sets)
     if seen_pmids:
         before = len(hits)
         hits = [h for h in hits if h.get("pmid") not in seen_pmids]
@@ -396,6 +532,8 @@ def search_and_rerank(
             "year_to": year_to,
             "journal": journal,
         },
+        "query_variants": query_variants,
+        "recovery_notes": recovery_notes,
         "count": len(papers),
         "papers": papers,
     }

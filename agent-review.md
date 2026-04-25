@@ -25,12 +25,15 @@ The pipeline is a solid keyword → embedding rerank design, but there are real 
 4. **Embedding model is stale.** `text-embedding-004` (`agent/server.py:203`) has been superseded by `gemini-embedding-001`. More importantly, you're not using asymmetric task types — both the query and documents go in as `contents=[query] + snippets` with no `task_type="retrieval_query"` / `"retrieval_document"` distinction.
 
 5. **No RRF / fallback when Meili ranks poorly.** Rerank happens only *within* Meili's top 60. If Meili misses a relevant paper (stemming, synonym, typo), embeddings can't rescue it. Reciprocal Rank Fusion of Meili score + embedding score would help.
+   - **Status:** fixed for lightweight query variants. The tool now expands abbreviation/guideline/evidence queries, merges candidates by PMID with RRF-style contributions, and includes the RRF signal in semantic reranking.
 
 6. **No query expansion.** No MeSH expansion, no HyDE, no synonym handling ("otitis media with effusion" vs "OME" vs "glue ear"). When the model picks a narrow query, it gets narrow results.
+   - **Status:** partially fixed with lightweight abbreviation expansion and guideline/evidence suffix variants.
 
 7. **Journal filter is exact match** (`agent/server.py:140`). Brittle — "JAMA Otolaryngol Head Neck Surg" vs "JAMA Otolaryngology - Head & Neck Surgery" will silently zero-out.
 
 8. **Silent zero-hit failure.** When filters eliminate all hits, the tool returns `count: 0` with no hint to the model ("your year filter removed 14 hits, your journal filter removed 3"). The model can't self-correct.
+   - **Status:** fixed for strict filters. The tool now retries low-hit searches after relaxing journal, MeSH, or publication-type filters and returns `recovery_notes`.
 
 ## Synthesis
 
@@ -81,14 +84,14 @@ Strong on intent and structure, weak on operational grounding.
 - [x] **Add an anti-hallucination citation rule** — system prompt now forbids fabricated citations, and `/chat` returns `citation_warnings` when final PubMed URLs were not retrieved by tools.
 - [x] **Dedupe papers across tool calls** — each `/chat` request tracks returned PMIDs and drops duplicates before returning later tool results to the model.
 - [x] **Switch to `gemini-embedding-001`** with asymmetric `task_type="retrieval_query"` / `"retrieval_document"`; raise default `max_results` to 10.
-- [ ] **Add RRF** between Meili rank and embedding rank; stop relying solely on rerank within top-60.
+- [x] **Add RRF** between Meili rank and embedding rank; stop relying solely on rerank within top-60 query variants.
 - [x] **Swap the forced-final-turn prompt** to a synthesis-only variant — final turn now uses a no-tools synthesis prompt.
 
 ## Smaller cleanups
 
 - [ ] Replace hardcoded `current_year = 2026` (`agent/server.py:209`) with `datetime.date.today().year`.
 - [ ] Make the journal filter case-insensitive or fuzzy (`agent/server.py:140`).
-- [ ] When the tool returns `count: 0`, include a hint about which filters eliminated hits.
+- [x] When the tool returns `count: 0`, include a hint about which filters eliminated hits.
 - [ ] Add search-budget guidance to system prompt (model doesn't know it has 5 tool turns).
 - [ ] Add 0-hit recovery instruction to system prompt.
 - [ ] Reframe "Do not provide personal medical advice" for a clinician audience.
@@ -96,3 +99,4 @@ Strong on intent and structure, weak on operational grounding.
 - [ ] Consider logging cited vs. retrieved papers to feed the benchmark scoring loop.
 - [x] Add out-of-scope handling for non-otology queries before tool use.
 - [x] Add a short embedding retry and per-request rerank disable path after embedding 429s.
+- [x] Add lightweight query expansion for abbreviations and guideline/evidence-seeking searches.
