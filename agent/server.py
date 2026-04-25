@@ -213,6 +213,24 @@ EVIDENCE_INTENT_TERMS = {
     "comparison",
 }
 
+US_GUIDELINE_MARKERS = {
+    "aao-hns",
+    "aao-hnsf",
+    "american academy of otolaryngology",
+    "american academy of otolaryngology-head and neck surgery",
+    "american college of radiology",
+    "acr appropriateness criteria",
+    "congress of neurological surgeons",
+}
+
+GUIDELINE_PHRASE_MARKERS = {
+    "clinical practice guideline",
+    "practice guideline",
+    "guideline update",
+    "appropriateness criteria",
+    "consensus statement",
+}
+
 
 def _quote_filter(value: str) -> str:
     return json.dumps(value)
@@ -278,6 +296,56 @@ def merge_ranked_hits(hit_sets: list[tuple[str, list]]) -> list:
             merged[pmid]["_rrf_score"] += contribution
             merged[pmid]["_matched_queries"].append(variant)
     return sorted(merged.values(), key=lambda hit: hit.get("_rrf_score", 0.0), reverse=True)
+
+
+def query_intent(query: str) -> set[str]:
+    normalized = query.lower()
+    terms = set(re.findall(r"[a-z0-9-]+", normalized))
+    intents = set()
+    if terms & GUIDELINE_INTENT_TERMS:
+        intents.add("guideline")
+    if terms & EVIDENCE_INTENT_TERMS:
+        intents.add("evidence")
+    return intents
+
+
+def publication_type_boost(publication_types: list[str]) -> float:
+    normalized = {pub_type.lower() for pub_type in publication_types}
+    boost = 0.0
+    if "practice guideline" in normalized:
+        boost = max(boost, 0.12)
+    if "guideline" in normalized:
+        boost = max(boost, 0.09)
+    if "systematic review" in normalized:
+        boost = max(boost, 0.07)
+    if "meta-analysis" in normalized:
+        boost = max(boost, 0.07)
+    if "randomized controlled trial" in normalized:
+        boost = max(boost, 0.05)
+    return boost
+
+
+def guideline_source_boost(title: str, abstract: str, journal: str) -> float:
+    haystack = f"{title} {abstract[:1000]} {journal}".lower()
+    boost = 0.0
+    if any(marker in haystack for marker in US_GUIDELINE_MARKERS):
+        boost += 0.16
+    if any(marker in haystack for marker in GUIDELINE_PHRASE_MARKERS):
+        boost += 0.06
+    if "official journal of american academy of otolaryngology" in haystack:
+        boost += 0.04
+    if "clinical practice guideline" in title.lower() and "update" in title.lower():
+        boost += 0.06
+    return boost
+
+
+def recency_boost_for_year(year: int | None, guideline_intent: bool) -> float:
+    if not isinstance(year, int):
+        return 0.0
+    current_year = 2026
+    window = 20 if guideline_intent else 15
+    max_boost = 0.18 if guideline_intent else 0.08
+    return max(0.0, 1 - min(current_year - year, window) / window) * max_boost
 
 
 def fetch_papers(
@@ -352,6 +420,8 @@ def semantic_rerank(query: str, hits: list) -> list:
     if not hits:
         return hits
     try:
+        intents = query_intent(query)
+        guideline_intent = "guideline" in intents
         snippets = [
             " ".join(
                 part for part in [
@@ -375,11 +445,13 @@ def semantic_rerank(query: str, hits: list) -> list:
         query_emb = query_embedding.values
         query_terms = {term.lower() for term in query.split() if len(term) > 2}
         scored = []
-        current_year = 2026
         for hit, emb in zip(hits, document_embeddings):
             semantic_score = _cosine(query_emb, emb.values)
-            title = hit.get("title", "").lower()
-            abstract = hit.get("abstract", "").lower()
+            raw_title = hit.get("title", "")
+            raw_abstract = hit.get("abstract", "")
+            journal = hit.get("journal", "")
+            title = raw_title.lower()
+            abstract = raw_abstract.lower()
             mesh_terms = [term.lower() for term in hit.get("mesh_terms", [])]
             publication_types = [term.lower() for term in hit.get("publication_type", [])]
             lexical_overlap = sum(term in title or term in abstract for term in query_terms)
@@ -388,20 +460,24 @@ def semantic_rerank(query: str, hits: list) -> list:
                 term in pub_type for term in query_terms for pub_type in publication_types
             )
             year = hit.get("year")
-            recency_boost = 0.0
-            if isinstance(year, int):
-                recency_boost = max(0.0, 1 - min(current_year - year, 15) / 15) * 0.08
+            recency_boost = recency_boost_for_year(year, guideline_intent)
+            hierarchy_boost = publication_type_boost(hit.get("publication_type", []))
+            source_boost = guideline_source_boost(raw_title, raw_abstract, journal) if guideline_intent else 0.0
             score = (
                 semantic_score
                 + (0.03 * lexical_overlap)
                 + (0.02 * mesh_overlap)
                 + (0.04 * publication_type_overlap)
                 + (2.0 * hit.get("_rrf_score", 0.0))
+                + hierarchy_boost
+                + source_boost
                 + recency_boost
             )
             enriched = dict(hit)
             enriched["_score"] = round(score, 4)
             enriched["_semantic_score"] = round(semantic_score, 4)
+            enriched["_hierarchy_boost"] = round(hierarchy_boost, 4)
+            enriched["_source_boost"] = round(source_boost, 4)
             scored.append(enriched)
 
         scored.sort(key=lambda hit: hit["_score"], reverse=True)
@@ -410,13 +486,48 @@ def semantic_rerank(query: str, hits: list) -> list:
         return reranked
     except Exception as e:
         print(f"  [rerank error] {e} — using keyword order")
-        fallback = []
-        for hit in hits[:RERANK_LIMIT]:
-            enriched = dict(hit)
-            enriched["_score"] = None
-            enriched["_semantic_score"] = None
-            fallback.append(enriched)
-        return fallback
+        return lexical_policy_rerank(query, hits)
+
+
+def lexical_policy_rerank(query: str, hits: list) -> list:
+    intents = query_intent(query)
+    guideline_intent = "guideline" in intents
+    query_terms = {term.lower() for term in query.split() if len(term) > 2}
+    scored = []
+    for rank, hit in enumerate(hits, start=1):
+        raw_title = hit.get("title", "")
+        raw_abstract = hit.get("abstract", "")
+        journal = hit.get("journal", "")
+        title = raw_title.lower()
+        abstract = raw_abstract.lower()
+        mesh_terms = [term.lower() for term in hit.get("mesh_terms", [])]
+        publication_types = [term.lower() for term in hit.get("publication_type", [])]
+        lexical_overlap = sum(term in title or term in abstract for term in query_terms)
+        mesh_overlap = sum(term in mesh for term in query_terms for mesh in mesh_terms)
+        publication_type_overlap = sum(
+            term in pub_type for term in query_terms for pub_type in publication_types
+        )
+        hierarchy_boost = publication_type_boost(hit.get("publication_type", []))
+        source_boost = guideline_source_boost(raw_title, raw_abstract, journal) if guideline_intent else 0.0
+        score = (
+            (1.0 / (60 + rank))
+            + (0.03 * lexical_overlap)
+            + (0.02 * mesh_overlap)
+            + (0.04 * publication_type_overlap)
+            + (2.0 * hit.get("_rrf_score", 0.0))
+            + hierarchy_boost
+            + source_boost
+            + recency_boost_for_year(hit.get("year"), guideline_intent)
+        )
+        enriched = dict(hit)
+        enriched["_score"] = round(score, 4)
+        enriched["_semantic_score"] = None
+        enriched["_hierarchy_boost"] = round(hierarchy_boost, 4)
+        enriched["_source_boost"] = round(source_boost, 4)
+        scored.append(enriched)
+
+    scored.sort(key=lambda hit: hit["_score"], reverse=True)
+    return scored[:RERANK_LIMIT]
 
 
 def embed_with_retry(contents, task_type: str):

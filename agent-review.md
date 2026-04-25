@@ -19,6 +19,7 @@ The pipeline is a solid keyword → embedding rerank design, but there are real 
 
 2. **Weak rerank for a guideline-first workflow.** Recency gets at most +0.08, and cosine similarity dominates. A 2011 case series with high lexical overlap beats a 2023 AAO-HNS guideline with lower title-match. For "current indications" questions this is actively wrong.
    - **Fix:** stronger recency weight when the query contains {"current", "guideline", "indications", "recommendations"}; or expose a sort mode.
+   - **Status:** fixed for guideline/current-practice intent with publication-type hierarchy boosts, AAO-HNS/ACR/CNS source boosts, guideline-update boosts, and stronger currentness weighting. The same policy also applies in lexical fallback when embedding quota is exhausted.
 
 3. **No deduplication across tool calls.** If the model issues 3 parallel searches that overlap, the same paper is presented 3× in context with no indication. Wastes context and over-weights a single source during synthesis.
 
@@ -86,6 +87,7 @@ Strong on intent and structure, weak on operational grounding.
 - [x] **Switch to `gemini-embedding-001`** with asymmetric `task_type="retrieval_query"` / `"retrieval_document"`; raise default `max_results` to 10.
 - [x] **Add RRF** between Meili rank and embedding rank; stop relying solely on rerank within top-60 query variants.
 - [x] **Swap the forced-final-turn prompt** to a synthesis-only variant — final turn now uses a no-tools synthesis prompt.
+- [x] **Boost guideline authority/currentness in reranking** — guideline-intent queries now prioritize practice guidelines, U.S. specialty-society sources, guideline updates, and recent current-practice records.
 
 ## Smaller cleanups
 
