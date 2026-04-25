@@ -51,7 +51,8 @@ Search broadly first, then narrow.
 
 Choose evidence based on the user's intent:
 - For current indications, recommendations, guidelines, or standard-of-care questions, prioritize recent clinical practice guidelines, consensus statements, and high-level reviews before individual studies.
-- For treatment-evidence questions, rank evidence by study design: systematic reviews/meta-analyses, randomized trials, prospective comparative studies, then retrospective cohorts/case series.
+- For treatment-evidence questions, always issue at least one search targeting clinical practice guidelines or consensus statements on the topic in addition to searching for primary studies. Guidelines synthesize the evidence and define standard of care — they should anchor the answer even when the question is framed around individual studies or treatment comparisons.
+- Rank primary evidence by study design: systematic reviews/meta-analyses, randomized trials, prospective comparative studies, then retrospective cohorts/case series.
 - Use lower-level studies only when higher-level evidence is absent, conflicting, or too sparse.
 - Do not present uncontrolled, single-center, or older cohort studies as strong evidence when higher-level evidence is weak or uncertain.
 
@@ -275,7 +276,7 @@ def expand_query_variants(query: str, publication_types: list[str] | None = None
     if terms & EVIDENCE_INTENT_TERMS or {"systematic review", "meta-analysis", "randomized controlled trial"} & pub_types:
         for suffix in [
             "systematic review meta-analysis randomized trial",
-            "Cochrane review",
+            "clinical practice guideline",
         ]:
             if suffix.lower() not in normalized:
                 variants.append(f"{query} {suffix}")
