@@ -46,6 +46,12 @@ The pipeline is a solid keyword → embedding rerank design, but there are real 
 
 4. **300-word cap** (`agent/server.py:65`) is tight for the rubric in `benchmark.md`. Meniere's treatment evidence genuinely needs more. Raise to 400–500, or make it conditional on question type.
 
+5. **Synthesis anchors on one paper when multiple guidelines are retrieved.** `prioritize recent clinical practice guidelines` created recency bias — the model would cite a 2025 international consensus repeatedly and skip a 2013 AAP guideline that scored higher in retrieval. Compounded by a singular response template ("Current guideline or consensus position") that primed single-paper answers.
+   - **Status:** fixed. Replaced "recent" with "authoritative", added an explicit instruction to cite every relevant retrieved guideline (not just the most recent), made the response template plural, and mirrored all changes in `FINAL_SYSTEM_INSTRUCTION`.
+
+6. **Extracted citations not deduplicated.** `extracted_citations` returned one row per inline `[Title (Year)](URL)` mention; a paper cited five times inline produced five identical rows in the `citations` array.
+   - **Status:** fixed. `extracted_citations` now keys on normalized URL and skips duplicates.
+
 ## Likely bugs / correctness
 
 1. **Verify tool calling with `gemma-4-31b-it`.** The model ID is valid (Gemma 4 exists), but the code relies on native function-calling via `types.Tool`, `function_call`/`function_response` parts (`agent/server.py:331`, `:380`, `:337-374`). Historically Gemma served through the Gemini API has not supported that surface the way Gemini models do — confirm it's actually emitting `function_call` parts rather than silently falling through to `if not function_calls: return response.text` (`agent/server.py:340-341`), which would return answers with no retrieval at all. If tool calls aren't firing, the rest of the review is secondary. If they are firing, carry on.
@@ -107,3 +113,5 @@ Strong on intent and structure, weak on operational grounding.
 - [x] Add a short embedding retry and per-request rerank disable path after embedding 429s.
 - [x] Add lightweight query expansion for abbreviations and guideline/evidence-seeking searches.
 - [x] Add `DISABLE_EMBEDDING_CACHE=1` escape hatch and ignore `data/runtime/` cache artifacts.
+- [x] Fix synthesis recency bias — replaced `prioritize recent` with `prioritize authoritative`, added explicit "cite all retrieved guidelines" instruction, pluralized the response template, mirrored in `FINAL_SYSTEM_INSTRUCTION`.
+- [x] Deduplicate extracted citations array — `extracted_citations` now skips duplicate URLs so a paper cited N times inline appears only once in the `citations` response field.
