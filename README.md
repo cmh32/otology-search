@@ -24,7 +24,7 @@ Gemma-4-31b-it  ←────────────────────�
      │ search_papers tool call                          │
      ▼                                                  │
 Query expansion (abbreviations + guideline/evidence     │
-suffix variants, up to 4 variants per call)             │
+suffix variants, up to 5 variants per call)             │
      │                                                  │
      ▼                                                  │
 Meilisearch BM25 fetch (top 60 per variant)             │
