@@ -84,16 +84,20 @@ def fetch_summaries(pmids: list[str], api_key: str, batch_size: int = 200) -> li
     return [r for r in results if isinstance(r, dict) and r.get("uid")]
 
 
-def fetch_article_details(pmids: list[str], api_key: str, batch_size: int = 100) -> tuple[dict, dict]:
-    """Returns (abstracts, mesh_terms) both keyed by PMID."""
+def fetch_article_details(pmids: list[str], api_key: str, batch_size: int = 100) -> tuple[dict, dict, dict]:
+    """Returns (abstracts, mesh_terms, publication_types) keyed by PMID."""
     abstracts = {}
     mesh_by_pmid = {}
+    publication_types_by_pmid = {}
     delay = 0.11 if api_key else 0.34
     total = len(pmids)
 
     for start in range(0, total, batch_size):
         batch = pmids[start:start + batch_size]
-        print(f"  Fetching abstracts + MeSH {start + 1}–{min(start + batch_size, total)} of {total}...")
+        print(
+            f"  Fetching abstracts + MeSH + publication types "
+            f"{start + 1}–{min(start + batch_size, total)} of {total}..."
+        )
         params = {
             "db": "pubmed",
             "id": ",".join(batch),
@@ -132,12 +136,23 @@ def fetch_article_details(pmids: list[str], api_key: str, batch_size: int = 100)
             if mesh_terms:
                 mesh_by_pmid[pmid] = [html.unescape(t.strip()) for t in mesh_terms]
 
+            publication_types = re.findall(r"<PublicationType[^>]*>([^<]+)</PublicationType>", article)
+            if publication_types:
+                publication_types_by_pmid[pmid] = [
+                    html.unescape(t.strip()) for t in publication_types
+                ]
+
         time.sleep(delay)
 
-    return abstracts, mesh_by_pmid
+    return abstracts, mesh_by_pmid, publication_types_by_pmid
 
 
-def build_document(summary: dict, abstracts: dict, mesh_by_pmid: dict) -> dict:
+def build_document(
+    summary: dict,
+    abstracts: dict,
+    mesh_by_pmid: dict,
+    publication_types_by_pmid: dict,
+) -> dict:
     pmid = summary.get("uid", "")
 
     authors = [
@@ -160,6 +175,7 @@ def build_document(summary: dict, abstracts: dict, mesh_by_pmid: dict) -> dict:
         "year": int(year) if year else None,
         "pubdate": pub_date,
         "mesh_terms": mesh_by_pmid.get(pmid, []),
+        "publication_type": publication_types_by_pmid.get(pmid, []),
         "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
     }
 
@@ -182,12 +198,15 @@ def main():
     print("Fetching article summaries...")
     summaries = fetch_summaries(pmids, api_key)
 
-    abstracts, mesh_by_pmid = {}, {}
+    abstracts, mesh_by_pmid, publication_types_by_pmid = {}, {}, {}
     if not args.no_abstracts:
-        print("Fetching abstracts + MeSH terms...")
-        abstracts, mesh_by_pmid = fetch_article_details(pmids, api_key)
+        print("Fetching abstracts + MeSH terms + publication types...")
+        abstracts, mesh_by_pmid, publication_types_by_pmid = fetch_article_details(pmids, api_key)
 
-    documents = [build_document(s, abstracts, mesh_by_pmid) for s in summaries]
+    documents = [
+        build_document(s, abstracts, mesh_by_pmid, publication_types_by_pmid)
+        for s in summaries
+    ]
     documents = [d for d in documents if d["title"]]
 
     output_path = Path(args.output)
@@ -195,10 +214,17 @@ def main():
     output_path.write_text(json.dumps(documents, indent=2))
 
     with_mesh = sum(1 for d in documents if d["mesh_terms"])
+    with_publication_type = sum(1 for d in documents if d["publication_type"])
     with_abstract = sum(1 for d in documents if d["abstract"])
     print(f"\nDone! Saved {len(documents)} articles to {output_path}")
-    print(f"  {with_abstract} have abstracts, {with_mesh} have MeSH terms")
-    print(f"\nRun: python3 scripts/upload.py {output_path} --reset --filterable year --filterable mesh_terms --filterable journal")
+    print(
+        f"  {with_abstract} have abstracts, {with_mesh} have MeSH terms, "
+        f"{with_publication_type} have publication types"
+    )
+    print(
+        f"\nRun: python3 scripts/upload.py {output_path} --reset "
+        "--filterable year --filterable mesh_terms --filterable publication_type --filterable journal"
+    )
 
 
 if __name__ == "__main__":

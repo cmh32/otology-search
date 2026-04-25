@@ -76,7 +76,7 @@ Strong on intent and structure, weak on operational grounding.
 
 - [x] **Confirm `gemma-4-31b-it` is actually tool-calling** — verified via `test_tool_calling.py`; function_call parts fire correctly.
 - [x] **Strip text preamble from tool-call turns** — `agent/server.py:344-346` now appends only function_call parts to `contents`, preventing token waste across turns.
-- [ ] **Index and filter on `publication_type`** — add to Meilisearch index (fetch script), expose as `publication_types` param on the tool, reference in system prompt.
+- [x] **Index and filter on `publication_type`** — added to PubMed fetch output, Meilisearch retrieval/filter path, search tool schema, reranking context, and system prompt.
 - [ ] **Add an anti-hallucination citation rule** — system prompt addition + post-hoc URL verification in `/chat` handler.
 - [ ] **Dedupe papers across tool calls** — within a single agent turn, merge results from parallel searches and drop duplicate PMIDs before returning to the model.
 - [ ] **Switch to `gemini-embedding-001`** with asymmetric `task_type="retrieval_query"` / `"retrieval_document"`; raise default `max_results` to 10.

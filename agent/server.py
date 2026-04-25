@@ -37,6 +37,7 @@ Before answering, call the tool one or more times with focused queries.
 When making a tool call, output only the function call — no surrounding text or explanation.
 For complex questions, decompose the question and search each angle separately.
 Use MeSH terms, year filters, and journal filters when they improve retrieval.
+Use publication-type filters when the user asks for guidelines, recommendations, systematic reviews, meta-analyses, or randomized trials.
 Search broadly first, then narrow.
 
 Choose evidence based on the user's intent:
@@ -86,6 +87,15 @@ SEARCH_TOOL = types.Tool(function_declarations=[
                     items=types.Schema(type="STRING"),
                     description="Optional PubMed MeSH terms to filter on when known",
                 ),
+                "publication_types": types.Schema(
+                    type="ARRAY",
+                    items=types.Schema(type="STRING"),
+                    description=(
+                        "Optional PubMed publication types to filter on, such as "
+                        "'Practice Guideline', 'Guideline', 'Systematic Review', "
+                        "'Meta-Analysis', or 'Randomized Controlled Trial'"
+                    ),
+                ),
                 "year_from": types.Schema(
                     type="INTEGER",
                     description="Optional lower bound publication year",
@@ -126,6 +136,7 @@ def _quote_filter(value: str) -> str:
 def fetch_papers(
     query: str,
     mesh_terms: list[str] | None = None,
+    publication_types: list[str] | None = None,
     year_from: int | None = None,
     year_to: int | None = None,
     journal: str | None = None,
@@ -143,6 +154,10 @@ def fetch_papers(
         quoted = ", ".join(_quote_filter(term) for term in mesh_terms if term)
         if quoted:
             filters.append(f"mesh_terms IN [{quoted}]")
+    if publication_types:
+        quoted = ", ".join(_quote_filter(pub_type) for pub_type in publication_types if pub_type)
+        if quoted:
+            filters.append(f"publication_type IN [{quoted}]")
 
     payload_obj = {
         "q": query,
@@ -156,6 +171,7 @@ def fetch_papers(
             "year",
             "pubdate",
             "mesh_terms",
+            "publication_type",
             "url",
         ],
     }
@@ -195,6 +211,7 @@ def semantic_rerank(query: str, hits: list) -> list:
                     h.get("title", ""),
                     h.get("abstract", "")[:1200],
                     " ".join(h.get("mesh_terms", [])[:8]),
+                    " ".join(h.get("publication_type", [])[:5]),
                     h.get("journal", ""),
                 ] if part
             )
@@ -213,13 +230,23 @@ def semantic_rerank(query: str, hits: list) -> list:
             title = hit.get("title", "").lower()
             abstract = hit.get("abstract", "").lower()
             mesh_terms = [term.lower() for term in hit.get("mesh_terms", [])]
+            publication_types = [term.lower() for term in hit.get("publication_type", [])]
             lexical_overlap = sum(term in title or term in abstract for term in query_terms)
             mesh_overlap = sum(term in mesh for term in query_terms for mesh in mesh_terms)
+            publication_type_overlap = sum(
+                term in pub_type for term in query_terms for pub_type in publication_types
+            )
             year = hit.get("year")
             recency_boost = 0.0
             if isinstance(year, int):
                 recency_boost = max(0.0, 1 - min(current_year - year, 15) / 15) * 0.08
-            score = semantic_score + (0.03 * lexical_overlap) + (0.02 * mesh_overlap) + recency_boost
+            score = (
+                semantic_score
+                + (0.03 * lexical_overlap)
+                + (0.02 * mesh_overlap)
+                + (0.04 * publication_type_overlap)
+                + recency_boost
+            )
             enriched = dict(hit)
             enriched["_score"] = round(score, 4)
             enriched["_semantic_score"] = round(semantic_score, 4)
@@ -243,6 +270,7 @@ def semantic_rerank(query: str, hits: list) -> list:
 def search_and_rerank(
     query: str,
     mesh_terms: list[str] | None = None,
+    publication_types: list[str] | None = None,
     year_from: int | None = None,
     year_to: int | None = None,
     journal: str | None = None,
@@ -252,6 +280,7 @@ def search_and_rerank(
     hits = fetch_papers(
         query=query,
         mesh_terms=mesh_terms,
+        publication_types=publication_types,
         year_from=year_from,
         year_to=year_to,
         journal=journal,
@@ -268,6 +297,7 @@ def search_and_rerank(
             "year": h.get("year"),
             "pubdate": h.get("pubdate", ""),
             "mesh_terms": h.get("mesh_terms", []),
+            "publication_type": h.get("publication_type", []),
             "url": h.get("url", ""),
             "abstract": h.get("abstract", ""),
             "score": h.get("_score"),
@@ -278,6 +308,7 @@ def search_and_rerank(
         "query": query,
         "filters": {
             "mesh_terms": mesh_terms or [],
+            "publication_types": publication_types or [],
             "year_from": year_from,
             "year_to": year_to,
             "journal": journal,
@@ -352,17 +383,20 @@ def chat():
                 fc = part.function_call
                 query = fc.args.get("query", "")
                 mesh_terms = fc.args.get("mesh_terms") or []
+                publication_types = fc.args.get("publication_types") or []
                 year_from = fc.args.get("year_from")
                 year_to = fc.args.get("year_to")
                 journal = fc.args.get("journal")
                 max_results = fc.args.get("max_results")
                 print(
                     f"    → query={query!r} mesh_terms={mesh_terms!r} "
+                    f"publication_types={publication_types!r} "
                     f"year_from={year_from!r} year_to={year_to!r} journal={journal!r}"
                 )
                 result = search_and_rerank(
                     query=query,
                     mesh_terms=mesh_terms,
+                    publication_types=publication_types,
                     year_from=year_from,
                     year_to=year_to,
                     journal=journal,
