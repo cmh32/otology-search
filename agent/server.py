@@ -34,6 +34,7 @@ Cite each source you rely on as a markdown hyperlink: [Title (Year)](URL).
 
 You have access to a search_papers tool over a PubMed otology index.
 Before answering, call the tool one or more times with focused queries.
+When making a tool call, output only the function call — no surrounding text or explanation.
 For complex questions, decompose the question and search each angle separately.
 Use MeSH terms, year filters, and journal filters when they improve retrieval.
 Search broadly first, then narrow.
@@ -341,7 +342,9 @@ def chat():
                 return jsonify({"reply": response.text})
 
             print(f"  [agent turn {turn + 1}] {len(function_calls)} search(es)")
-            contents.append(candidate.content)
+            # Strip any text preamble emitted alongside tool calls to keep context lean
+            tool_only_content = types.Content(role="model", parts=function_calls)
+            contents.append(tool_only_content)
 
             # Execute each tool call and collect responses
             tool_parts = []
