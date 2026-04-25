@@ -77,11 +77,12 @@ Strong on intent and structure, weak on operational grounding.
 - [x] **Confirm `gemma-4-31b-it` is actually tool-calling** — verified via `test_tool_calling.py`; function_call parts fire correctly.
 - [x] **Strip text preamble from tool-call turns** — `agent/server.py:344-346` now appends only function_call parts to `contents`, preventing token waste across turns.
 - [x] **Index and filter on `publication_type`** — added to PubMed fetch output, Meilisearch retrieval/filter path, search tool schema, reranking context, and system prompt.
-- [ ] **Add an anti-hallucination citation rule** — system prompt addition + post-hoc URL verification in `/chat` handler.
-- [ ] **Dedupe papers across tool calls** — within a single agent turn, merge results from parallel searches and drop duplicate PMIDs before returning to the model.
+- [x] **Supplement PubMed data with high-value evidence queries** — fetch script now merges broad otology results with guideline/high-level evidence and benchmark-critical query sets; hosted index rebuilt from 16,496 docs.
+- [x] **Add an anti-hallucination citation rule** — system prompt now forbids fabricated citations, and `/chat` returns `citation_warnings` when final PubMed URLs were not retrieved by tools.
+- [x] **Dedupe papers across tool calls** — each `/chat` request tracks returned PMIDs and drops duplicates before returning later tool results to the model.
 - [x] **Switch to `gemini-embedding-001`** with asymmetric `task_type="retrieval_query"` / `"retrieval_document"`; raise default `max_results` to 10.
 - [ ] **Add RRF** between Meili rank and embedding rank; stop relying solely on rerank within top-60.
-- [ ] **Swap the forced-final-turn prompt** to a synthesis-only variant (`agent/server.py:379-383`).
+- [x] **Swap the forced-final-turn prompt** to a synthesis-only variant — final turn now uses a no-tools synthesis prompt.
 
 ## Smaller cleanups
 
@@ -93,3 +94,5 @@ Strong on intent and structure, weak on operational grounding.
 - [ ] Reframe "Do not provide personal medical advice" for a clinician audience.
 - [ ] Add conflict-handling guidance to system prompt (guideline vs. recent meta-analysis).
 - [ ] Consider logging cited vs. retrieved papers to feed the benchmark scoring loop.
+- [x] Add out-of-scope handling for non-otology queries before tool use.
+- [x] Add a short embedding retry and per-request rerank disable path after embedding 429s.

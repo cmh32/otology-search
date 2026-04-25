@@ -4,6 +4,8 @@
 import json
 import math
 import os
+import re
+import time
 import urllib.request
 import urllib.error
 
@@ -31,6 +33,10 @@ SYSTEM_INSTRUCTION = """You are a clinical literature research assistant for an 
 Use precise clinical terminology. Do not provide personal medical advice.
 Your only source of truth is the literature retrieved with the tool. If evidence is thin or absent, say so clearly.
 Cite each source you rely on as a markdown hyperlink: [Title (Year)](URL).
+Only cite papers returned by the search_papers tool. Never fabricate a title, year, or URL.
+
+Scope: answer otology, hearing, vestibular, ear surgery, and closely related neurotology questions.
+If the user asks about a clearly non-otology topic such as rhinology, laryngology, ophthalmology, or general medicine, say that it is outside this otology literature index and do not search.
 
 You have access to a search_papers tool over a PubMed otology index.
 Before answering, call the tool one or more times with focused queries.
@@ -64,6 +70,29 @@ If the user asks for current indications or guideline-based management, organize
 4. Important uncertainty, exceptions, or at-risk subgroups.
 
 When summarizing evidence, include study design, sample size, and evidence quality when available.
+Keep the answer under 300 words unless the user asks for more depth.
+Do not use tables unless the user explicitly asks."""
+
+FINAL_SYSTEM_INSTRUCTION = """You are a clinical literature research assistant for an APRN specializing in otology.
+Use precise clinical terminology. Do not provide personal medical advice.
+Your only source of truth is the literature already retrieved in this conversation. If evidence is thin or absent, say so clearly.
+Only cite papers returned by the search_papers tool. Never fabricate a title, year, or URL.
+Cite each source you rely on as a markdown hyperlink: [Title (Year)](URL).
+
+Write a concise synthesis from the retrieved papers. Do not call or request tools.
+
+If the user asks about treatment evidence or recommendations, organize the answer in this order:
+1. Overall evidence quality.
+2. Best-supported interventions or recommendations, grouped by clinical endpoint when relevant.
+3. Recommendations or practices supported mainly by weak or very low-certainty evidence.
+4. Major tradeoffs, harms, and residual uncertainty.
+
+If the user asks for current indications or guideline-based management, organize the answer in this order:
+1. Current guideline or consensus position and year.
+2. Main indications or action statements.
+3. Important situations where the guideline recommends against intervention or suggests observation first.
+4. Important uncertainty, exceptions, or at-risk subgroups.
+
 Keep the answer under 300 words unless the user asks for more depth.
 Do not use tables unless the user explicitly asks."""
 
@@ -122,16 +151,37 @@ AGENT_CONFIG = types.GenerateContentConfig(
     system_instruction=SYSTEM_INSTRUCTION,
     tools=[SEARCH_TOOL],
 )
-FINAL_CONFIG = types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
+FINAL_CONFIG = types.GenerateContentConfig(system_instruction=FINAL_SYSTEM_INSTRUCTION)
 
 MAX_TOOL_TURNS = 5
 FETCH_LIMIT = 60   # candidates pulled from Meilisearch
 RERANK_LIMIT = 12  # returned to the model after semantic re-ranking
 EMBEDDING_MODEL = "gemini-embedding-001"
+EMBEDDING_RETRY_DELAY_SECONDS = 2
+
+OUT_OF_SCOPE_TERMS = {
+    "rhinosinusitis",
+    "sinusitis",
+    "nasal polyp",
+    "nasal polyps",
+    "tonsillectomy",
+    "adenoid hypertrophy",
+    "laryngology",
+    "dysphonia",
+    "vocal cord",
+    "glaucoma",
+}
+
+URL_PATTERN = re.compile(r"https://pubmed\.ncbi\.nlm\.nih\.gov/\d+/?")
 
 
 def _quote_filter(value: str) -> str:
     return json.dumps(value)
+
+
+def is_out_of_scope(message: str) -> bool:
+    normalized = message.lower()
+    return any(term in normalized for term in OUT_OF_SCOPE_TERMS)
 
 
 def fetch_papers(
@@ -218,16 +268,14 @@ def semantic_rerank(query: str, hits: list) -> list:
             )
             for h in hits
         ]
-        query_embedding = client.models.embed_content(
-            model=EMBEDDING_MODEL,
+        query_embedding = embed_with_retry(
             contents=query,
-            config=types.EmbedContentConfig(task_type="retrieval_query"),
-        ).embeddings[0]
-        document_embeddings = client.models.embed_content(
-            model=EMBEDDING_MODEL,
+            task_type="retrieval_query",
+        )[0]
+        document_embeddings = embed_with_retry(
             contents=snippets,
-            config=types.EmbedContentConfig(task_type="retrieval_document"),
-        ).embeddings
+            task_type="retrieval_document",
+        )
         query_emb = query_embedding.values
         query_terms = {term.lower() for term in query.split() if len(term) > 2}
         scored = []
@@ -274,6 +322,21 @@ def semantic_rerank(query: str, hits: list) -> list:
         return fallback
 
 
+def embed_with_retry(contents, task_type: str):
+    for attempt in range(2):
+        try:
+            return client.models.embed_content(
+                model=EMBEDDING_MODEL,
+                contents=contents,
+                config=types.EmbedContentConfig(task_type=task_type),
+            ).embeddings
+        except Exception as e:
+            if "429" not in str(e) or attempt == 1:
+                raise
+            print(f"  [embedding rate limit] retrying after {EMBEDDING_RETRY_DELAY_SECONDS}s")
+            time.sleep(EMBEDDING_RETRY_DELAY_SECONDS)
+
+
 def search_and_rerank(
     query: str,
     mesh_terms: list[str] | None = None,
@@ -282,6 +345,8 @@ def search_and_rerank(
     year_to: int | None = None,
     journal: str | None = None,
     max_results: int | None = None,
+    seen_pmids: set[str] | None = None,
+    skip_rerank: bool = False,
 ) -> dict:
     requested = max(1, min(int(max_results or 10), RERANK_LIMIT))
     hits = fetch_papers(
@@ -292,10 +357,21 @@ def search_and_rerank(
         year_to=year_to,
         journal=journal,
     )
-    hits = semantic_rerank(query, hits)
+    if seen_pmids:
+        before = len(hits)
+        hits = [h for h in hits if h.get("pmid") not in seen_pmids]
+        removed = before - len(hits)
+        if removed:
+            print(f"  [dedupe] dropped {removed} previously returned PMID(s)")
+    if skip_rerank:
+        hits = hits[:RERANK_LIMIT]
+    else:
+        hits = semantic_rerank(query, hits)
     hits = hits[:requested]
     papers = []
     for h in hits:
+        if seen_pmids is not None and h.get("pmid"):
+            seen_pmids.add(h["pmid"])
         papers.append({
             "pmid": h.get("pmid"),
             "title": h.get("title", ""),
@@ -323,6 +399,20 @@ def search_and_rerank(
         "count": len(papers),
         "papers": papers,
     }
+
+
+def filter_unretrieved_citations(reply: str, retrieved_urls: set[str]) -> tuple[str, list[str]]:
+    cited_urls = set(URL_PATTERN.findall(reply or ""))
+    missing = sorted(url for url in cited_urls if url.rstrip("/") + "/" not in retrieved_urls and url.rstrip("/") not in retrieved_urls)
+    if not missing:
+        return reply, []
+
+    warning = (
+        "\n\nCitation check: the answer contained citation URL(s) that were not returned "
+        "by the literature search and should be independently verified: "
+        + ", ".join(missing)
+    )
+    return (reply or "") + warning, missing
 
 
 @app.after_request
@@ -356,6 +446,14 @@ def chat():
     last_message = messages[-1]["content"]
     print(f"\n[user] {last_message[:80]}{'...' if len(last_message) > 80 else ''}")
 
+    if is_out_of_scope(last_message):
+        return jsonify({
+            "reply": (
+                "That question is outside this otology-focused literature index. "
+                "I can help with otology, hearing, vestibular, ear surgery, and closely related neurotology questions."
+            )
+        })
+
     # Build contents from full conversation history
     contents = []
     for msg in messages[:-1]:
@@ -364,6 +462,10 @@ def chat():
     contents.append(types.Content(role="user", parts=[types.Part(text=last_message)]))
 
     try:
+        seen_pmids = set()
+        retrieved_urls = set()
+        skip_rerank_for_request = False
+
         # Agentic tool-calling loop
         for turn in range(MAX_TOOL_TURNS):
             response = client.models.generate_content(
@@ -377,7 +479,8 @@ def chat():
 
             # No tool calls → model is done, return the text answer
             if not function_calls:
-                return jsonify({"reply": response.text})
+                reply, missing_urls = filter_unretrieved_citations(response.text, retrieved_urls)
+                return jsonify({"reply": reply, "citation_warnings": missing_urls})
 
             print(f"  [agent turn {turn + 1}] {len(function_calls)} search(es)")
             # Strip any text preamble emitted alongside tool calls to keep context lean
@@ -400,15 +503,38 @@ def chat():
                     f"publication_types={publication_types!r} "
                     f"year_from={year_from!r} year_to={year_to!r} journal={journal!r}"
                 )
-                result = search_and_rerank(
-                    query=query,
-                    mesh_terms=mesh_terms,
-                    publication_types=publication_types,
-                    year_from=year_from,
-                    year_to=year_to,
-                    journal=journal,
-                    max_results=max_results,
-                )
+                try:
+                    result = search_and_rerank(
+                        query=query,
+                        mesh_terms=mesh_terms,
+                        publication_types=publication_types,
+                        year_from=year_from,
+                        year_to=year_to,
+                        journal=journal,
+                        max_results=max_results,
+                        seen_pmids=seen_pmids,
+                        skip_rerank=skip_rerank_for_request,
+                    )
+                except Exception as e:
+                    if "429" not in str(e):
+                        raise
+                    print("  [rerank disabled] embedding quota hit; using keyword order for this request")
+                    skip_rerank_for_request = True
+                    result = search_and_rerank(
+                        query=query,
+                        mesh_terms=mesh_terms,
+                        publication_types=publication_types,
+                        year_from=year_from,
+                        year_to=year_to,
+                        journal=journal,
+                        max_results=max_results,
+                        seen_pmids=seen_pmids,
+                        skip_rerank=True,
+                    )
+                for paper in result.get("papers", []):
+                    url = paper.get("url")
+                    if url:
+                        retrieved_urls.add(url.rstrip("/") + "/")
                 tool_parts.append(types.Part(
                     function_response=types.FunctionResponse(
                         name=fc.name,
@@ -425,7 +551,8 @@ def chat():
             contents=contents,
             config=FINAL_CONFIG,
         )
-        return jsonify({"reply": response.text})
+        reply, missing_urls = filter_unretrieved_citations(response.text, retrieved_urls)
+        return jsonify({"reply": reply, "citation_warnings": missing_urls})
 
     except urllib.error.URLError as e:
         print(f"[error] Meilisearch: {e}")
