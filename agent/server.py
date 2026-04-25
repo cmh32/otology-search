@@ -50,11 +50,12 @@ Use publication-type filters when the user asks for guidelines, recommendations,
 Search broadly first, then narrow.
 
 Choose evidence based on the user's intent:
-- For current indications, recommendations, guidelines, or standard-of-care questions, prioritize recent clinical practice guidelines, consensus statements, and high-level reviews before individual studies.
+- For current indications, recommendations, guidelines, or standard-of-care questions, prioritize authoritative clinical practice guidelines and consensus statements from major societies, then high-level reviews before individual studies.
 - For treatment-evidence questions, always issue at least one search targeting clinical practice guidelines or consensus statements on the topic in addition to searching for primary studies. Guidelines synthesize the evidence and define standard of care — they should anchor the answer even when the question is framed around individual studies or treatment comparisons.
 - Rank primary evidence by study design: systematic reviews/meta-analyses, randomized trials, prospective comparative studies, then retrospective cohorts/case series.
 - Use lower-level studies only when higher-level evidence is absent, conflicting, or too sparse.
 - Do not present uncontrolled, single-center, or older cohort studies as strong evidence when higher-level evidence is weak or uncertain.
+- When multiple guidelines on the same topic were retrieved, cite each relevant one in the answer — do not anchor on a single guideline when others address the same point. A guideline from a major US society (AAP, AAO-HNS, AAFP) warrants citation even when a more recent international consensus was also retrieved.
 
 In the final answer, distinguish when relevant between:
 - strength of evidence
@@ -68,7 +69,7 @@ If the user asks about treatment evidence or recommendations, organize the answe
 4. Major tradeoffs, harms, and residual uncertainty.
 
 If the user asks for current indications or guideline-based management, organize the answer in this order:
-1. Current guideline or consensus position and year.
+1. Relevant guidelines and consensus positions (include issuing body and year for each).
 2. Main indications or action statements.
 3. Important situations where the guideline recommends against intervention or suggests observation first.
 4. Important uncertainty, exceptions, or at-risk subgroups.
@@ -84,6 +85,7 @@ Only cite papers returned by the search_papers tool. Never fabricate a title, ye
 Cite each source you rely on as a markdown hyperlink: [Title (Year)](URL).
 
 Write a concise synthesis from the retrieved papers. Do not call or request tools.
+When multiple guidelines on the same topic were retrieved, cite each relevant one — do not anchor on a single guideline when others address the same point.
 
 If the user asks about treatment evidence or recommendations, organize the answer in this order:
 1. Overall evidence quality.
@@ -92,7 +94,7 @@ If the user asks about treatment evidence or recommendations, organize the answe
 4. Major tradeoffs, harms, and residual uncertainty.
 
 If the user asks for current indications or guideline-based management, organize the answer in this order:
-1. Current guideline or consensus position and year.
+1. Relevant guidelines and consensus positions (include issuing body and year for each).
 2. Main indications or action statements.
 3. Important situations where the guideline recommends against intervention or suggests observation first.
 4. Important uncertainty, exceptions, or at-risk subgroups.
@@ -814,10 +816,14 @@ def filter_unretrieved_citations(reply: str, retrieved_urls: set[str]) -> tuple[
 
 
 def extracted_citations(reply: str) -> list[dict]:
-    return [
-        {"label": label, "url": url.rstrip("/") + "/"}
-        for label, url in CITATION_PATTERN.findall(reply or "")
-    ]
+    seen = set()
+    result = []
+    for label, url in CITATION_PATTERN.findall(reply or ""):
+        normalized = url.rstrip("/") + "/"
+        if normalized not in seen:
+            seen.add(normalized)
+            result.append({"label": label, "url": normalized})
+    return result
 
 
 @app.after_request
