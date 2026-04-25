@@ -22,7 +22,9 @@ from pathlib import Path
 
 BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 
-# MeSH-anchored query covering ear/otology without pulling in unrelated ENT
+# MeSH-anchored query covering ear/otology without pulling in unrelated ENT.
+# This intentionally stays broad; supplemental queries below patch high-value
+# evidence types that PubMed relevance sorting can otherwise push past retmax.
 SEARCH_QUERY = (
     "(otology[MeSH Terms] OR "
     "\"ear diseases\"[MeSH Terms] OR "
@@ -35,6 +37,40 @@ SEARCH_QUERY = (
     "\"meniere disease\"[MeSH Terms] OR "
     "\"acoustic neuroma\"[MeSH Terms])"
 )
+
+SUPPLEMENTAL_SEARCH_QUERIES = [
+    (
+        "otology guidelines",
+        f"{SEARCH_QUERY} AND "
+        "(practice guideline[Publication Type] OR guideline[Publication Type])",
+    ),
+    (
+        "otology high-level evidence",
+        f"{SEARCH_QUERY} AND "
+        "("
+        "practice guideline[Publication Type] OR "
+        "guideline[Publication Type] OR "
+        "systematic review[Publication Type] OR "
+        "meta-analysis[Publication Type] OR "
+        "randomized controlled trial[Publication Type]"
+        ")",
+    ),
+    (
+        "sudden hearing loss guidelines",
+        "(\"sudden hearing loss\" OR \"sudden sensorineural hearing loss\" OR SSNHL) "
+        "AND (guideline OR \"clinical practice guideline\")",
+    ),
+    (
+        "tympanostomy tube guidelines",
+        "(tympanostomy tubes OR tympanostomy tube) "
+        "AND (guideline OR \"clinical practice guideline\")",
+    ),
+    (
+        "otitis media with effusion guidelines",
+        "\"otitis media with effusion\" AND "
+        "(guideline OR \"clinical practice guideline\")",
+    ),
+]
 
 
 def fetch(url: str, params: dict, api_key: str, retries: int = 3) -> dict:
@@ -51,8 +87,8 @@ def fetch(url: str, params: dict, api_key: str, retries: int = 3) -> dict:
             time.sleep(2 ** attempt)
 
 
-def search_pmids(query: str, max_results: int, api_key: str) -> list[str]:
-    print(f"Searching PubMed for up to {max_results} articles...")
+def search_pmids(query: str, max_results: int, api_key: str, label: str = "query") -> list[str]:
+    print(f"Searching PubMed [{label}] for up to {max_results} articles...")
     data = fetch(f"{BASE_URL}/esearch.fcgi", {
         "db": "pubmed",
         "term": query,
@@ -61,8 +97,22 @@ def search_pmids(query: str, max_results: int, api_key: str) -> list[str]:
         "sort": "relevance",
     }, api_key)
     pmids = data["esearchresult"]["idlist"]
-    print(f"Found {len(pmids)} articles.")
+    total = data["esearchresult"].get("count", len(pmids))
+    print(f"Found {len(pmids)} articles ({total} total matches).")
     return pmids
+
+
+def merge_pmids(primary_pmids: list[str], supplemental_pmids: list[str]) -> tuple[list[str], int]:
+    seen = set(primary_pmids)
+    merged = list(primary_pmids)
+    added = 0
+    for pmid in supplemental_pmids:
+        if pmid in seen:
+            continue
+        seen.add(pmid)
+        merged.append(pmid)
+        added += 1
+    return merged, added
 
 
 def fetch_summaries(pmids: list[str], api_key: str, batch_size: int = 200) -> list[dict]:
@@ -182,18 +232,37 @@ def build_document(
 
 def main():
     parser = argparse.ArgumentParser(description="Fetch ear/otology articles from PubMed.")
-    parser.add_argument("--max", type=int, default=10000, help="Max articles to fetch (default 2000)")
+    parser.add_argument("--max", type=int, default=10000, help="Max broad otology articles to fetch")
+    parser.add_argument(
+        "--supplemental-max",
+        type=int,
+        default=10000,
+        help="Max articles to fetch for each supplemental high-value query",
+    )
     parser.add_argument("--output", default="my-data/pubmed-otology.json", help="Output JSON path")
     parser.add_argument("--no-abstracts", action="store_true", help="Skip abstract/MeSH fetching (faster)")
+    parser.add_argument(
+        "--no-supplemental",
+        action="store_true",
+        help="Skip supplemental guideline/review/RCT queries",
+    )
     args = parser.parse_args()
 
     api_key = os.environ.get("NCBI_API_KEY", "")
     if not api_key:
         print("Warning: NCBI_API_KEY not set. Rate limited to 3 req/s (slower).")
 
-    pmids = search_pmids(SEARCH_QUERY, args.max, api_key)
+    pmids = search_pmids(SEARCH_QUERY, args.max, api_key, label="broad otology")
     if not pmids:
         raise SystemExit("No articles found.")
+
+    if not args.no_supplemental:
+        print("Fetching supplemental high-value PMID sets...")
+        for label, query in SUPPLEMENTAL_SEARCH_QUERIES:
+            supplemental_pmids = search_pmids(query, args.supplemental_max, api_key, label=label)
+            pmids, added = merge_pmids(pmids, supplemental_pmids)
+            print(f"  Added {added} new PMIDs from {label}.")
+        print(f"Total unique PMIDs after supplements: {len(pmids)}")
 
     print("Fetching article summaries...")
     summaries = fetch_summaries(pmids, api_key)
