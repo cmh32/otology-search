@@ -276,6 +276,7 @@ def expand_query_variants(query: str, publication_types: list[str] | None = None
     if terms & EVIDENCE_INTENT_TERMS or {"systematic review", "meta-analysis", "randomized controlled trial"} & pub_types:
         for suffix in [
             "systematic review meta-analysis randomized trial",
+            "Cochrane review",
             "clinical practice guideline",
         ]:
             if suffix.lower() not in normalized:
@@ -289,7 +290,7 @@ def expand_query_variants(query: str, publication_types: list[str] | None = None
         if key not in seen:
             seen.add(key)
             deduped.append(compact)
-    return deduped[:4]
+    return deduped[:5]
 
 
 def merge_ranked_hits(hit_sets: list[tuple[str, list]]) -> list:
