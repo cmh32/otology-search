@@ -85,6 +85,7 @@ Strong on intent and structure, weak on operational grounding.
 - [x] **Add an anti-hallucination citation rule** — system prompt now forbids fabricated citations, and `/chat` returns `citation_warnings` when final PubMed URLs were not retrieved by tools.
 - [x] **Dedupe papers across tool calls** — each `/chat` request tracks returned PMIDs and drops duplicates before returning later tool results to the model.
 - [x] **Switch to `gemini-embedding-001`** with asymmetric `task_type="retrieval_query"` / `"retrieval_document"`; raise default `max_results` to 10.
+- [x] **Add embedding provider abstraction and cache** — reranking now supports `EMBEDDING_PROVIDER=gemini` (default) or `openai`, isolates cache entries by provider/model/task/text hash, and stores vectors in ignored SQLite cache storage.
 - [x] **Add RRF** between Meili rank and embedding rank; stop relying solely on rerank within top-60 query variants.
 - [x] **Swap the forced-final-turn prompt** to a synthesis-only variant — final turn now uses a no-tools synthesis prompt.
 - [x] **Boost guideline authority/currentness in reranking** — guideline-intent queries now prioritize practice guidelines, U.S. specialty-society sources, guideline updates, and recent current-practice records.
@@ -102,3 +103,4 @@ Strong on intent and structure, weak on operational grounding.
 - [x] Add out-of-scope handling for non-otology queries before tool use.
 - [x] Add a short embedding retry and per-request rerank disable path after embedding 429s.
 - [x] Add lightweight query expansion for abbreviations and guideline/evidence-seeking searches.
+- [x] Add `DISABLE_EMBEDDING_CACHE=1` escape hatch and ignore `data/runtime/` cache artifacts.

@@ -5,9 +5,12 @@ import json
 import math
 import os
 import re
+import hashlib
+import sqlite3
 import time
 import urllib.request
 import urllib.error
+from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 from google import genai
@@ -156,8 +159,14 @@ FINAL_CONFIG = types.GenerateContentConfig(system_instruction=FINAL_SYSTEM_INSTR
 MAX_TOOL_TURNS = 5
 FETCH_LIMIT = 60   # candidates pulled from Meilisearch
 RERANK_LIMIT = 12  # returned to the model after semantic re-ranking
-EMBEDDING_MODEL = "gemini-embedding-001"
+EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "gemini").strip().lower()
+EMBEDDING_MODEL = os.environ.get(
+    "EMBEDDING_MODEL",
+    "text-embedding-3-large" if EMBEDDING_PROVIDER == "openai" else "gemini-embedding-001",
+)
 EMBEDDING_RETRY_DELAY_SECONDS = 2
+EMBEDDING_CACHE_PATH = os.environ.get("EMBEDDING_CACHE_PATH", "data/runtime/embedding-cache.sqlite")
+DISABLE_EMBEDDING_CACHE = os.environ.get("DISABLE_EMBEDDING_CACHE", "").lower() in {"1", "true", "yes"}
 MIN_FILTERED_HITS = 3
 
 OUT_OF_SCOPE_TERMS = {
@@ -415,6 +424,154 @@ def _cosine(a: list, b: list) -> float:
     return dot / denom if denom else 0.0
 
 
+class EmbeddingProvider:
+    def __init__(self, provider: str, model: str):
+        self.provider = provider
+        self.model = model
+
+    def embed(self, texts: list[str], task_type: str) -> list[list[float]]:
+        if self.provider == "gemini":
+            return self._embed_gemini(texts, task_type)
+        if self.provider == "openai":
+            return self._embed_openai(texts)
+        raise ValueError(f"Unsupported EMBEDDING_PROVIDER={self.provider!r}")
+
+    def _embed_gemini(self, texts: list[str], task_type: str) -> list[list[float]]:
+        response = client.models.embed_content(
+            model=self.model,
+            contents=texts,
+            config=types.EmbedContentConfig(task_type=task_type),
+        )
+        return [embedding.values for embedding in response.embeddings]
+
+    def _embed_openai(self, texts: list[str]) -> list[list[float]]:
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY is required when EMBEDDING_PROVIDER=openai")
+
+        payload = json.dumps({
+            "model": self.model,
+            "input": texts,
+        }).encode()
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/embeddings",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read())
+
+        embeddings_by_index = sorted(data.get("data", []), key=lambda item: item.get("index", 0))
+        return [item["embedding"] for item in embeddings_by_index]
+
+
+class EmbeddingCache:
+    def __init__(self, path: str, provider: EmbeddingProvider):
+        self.path = Path(path)
+        self.provider = provider
+        self.disabled = DISABLE_EMBEDDING_CACHE
+        if not self.disabled:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._ensure_schema()
+
+    def embed(self, texts: list[str], task_type: str) -> list[list[float]]:
+        if self.disabled:
+            return self._embed_with_retry_uncached(texts, task_type)
+
+        results: list[list[float] | None] = [None] * len(texts)
+        missed_indexes = []
+        missed_texts = []
+        with self._connect() as conn:
+            for index, text in enumerate(texts):
+                cached = self._get(conn, text, task_type)
+                if cached is None:
+                    missed_indexes.append(index)
+                    missed_texts.append(text)
+                else:
+                    results[index] = cached
+
+        if missed_texts:
+            fresh = self._embed_with_retry_uncached(missed_texts, task_type)
+            if len(fresh) != len(missed_texts):
+                raise RuntimeError(
+                    f"Embedding provider returned {len(fresh)} vectors for {len(missed_texts)} texts"
+                )
+            with self._connect() as conn:
+                for index, text, embedding in zip(missed_indexes, missed_texts, fresh):
+                    results[index] = embedding
+                    self._put(conn, text, task_type, embedding)
+                conn.commit()
+
+        return [embedding for embedding in results if embedding is not None]
+
+    def _embed_with_retry_uncached(self, texts: list[str], task_type: str) -> list[list[float]]:
+        for attempt in range(2):
+            try:
+                return self.provider.embed(texts, task_type)
+            except Exception as e:
+                if "429" not in str(e) or attempt == 1:
+                    raise
+                print(f"  [embedding rate limit] retrying after {EMBEDDING_RETRY_DELAY_SECONDS}s")
+                time.sleep(EMBEDDING_RETRY_DELAY_SECONDS)
+
+    def _ensure_schema(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS embeddings (
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    task_type TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    embedding_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (provider, model, task_type, content_hash)
+                )
+                """
+            )
+
+    def _connect(self):
+        return sqlite3.connect(self.path)
+
+    def _content_hash(self, text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def _get(self, conn, text: str, task_type: str) -> list[float] | None:
+        row = conn.execute(
+            """
+            SELECT embedding_json
+            FROM embeddings
+            WHERE provider = ? AND model = ? AND task_type = ? AND content_hash = ?
+            """,
+            (self.provider.provider, self.provider.model, task_type, self._content_hash(text)),
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def _put(self, conn, text: str, task_type: str, embedding: list[float]) -> None:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO embeddings
+                (provider, model, task_type, content_hash, embedding_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                self.provider.provider,
+                self.provider.model,
+                task_type,
+                self._content_hash(text),
+                json.dumps(embedding),
+                int(time.time()),
+            ),
+        )
+
+
+embedding_provider = EmbeddingProvider(EMBEDDING_PROVIDER, EMBEDDING_MODEL)
+embedding_cache = EmbeddingCache(EMBEDDING_CACHE_PATH, embedding_provider)
+
+
 def semantic_rerank(query: str, hits: list) -> list:
     """Re-rank hits by embedding cosine similarity; falls back to keyword order on error."""
     if not hits:
@@ -434,19 +591,19 @@ def semantic_rerank(query: str, hits: list) -> list:
             )
             for h in hits
         ]
-        query_embedding = embed_with_retry(
-            contents=query,
+        query_embedding = embed_texts(
+            texts=[query],
             task_type="retrieval_query",
         )[0]
-        document_embeddings = embed_with_retry(
-            contents=snippets,
+        document_embeddings = embed_texts(
+            texts=snippets,
             task_type="retrieval_document",
         )
-        query_emb = query_embedding.values
+        query_emb = query_embedding
         query_terms = {term.lower() for term in query.split() if len(term) > 2}
         scored = []
         for hit, emb in zip(hits, document_embeddings):
-            semantic_score = _cosine(query_emb, emb.values)
+            semantic_score = _cosine(query_emb, emb)
             raw_title = hit.get("title", "")
             raw_abstract = hit.get("abstract", "")
             journal = hit.get("journal", "")
@@ -530,19 +687,8 @@ def lexical_policy_rerank(query: str, hits: list) -> list:
     return scored[:RERANK_LIMIT]
 
 
-def embed_with_retry(contents, task_type: str):
-    for attempt in range(2):
-        try:
-            return client.models.embed_content(
-                model=EMBEDDING_MODEL,
-                contents=contents,
-                config=types.EmbedContentConfig(task_type=task_type),
-            ).embeddings
-        except Exception as e:
-            if "429" not in str(e) or attempt == 1:
-                raise
-            print(f"  [embedding rate limit] retrying after {EMBEDDING_RETRY_DELAY_SECONDS}s")
-            time.sleep(EMBEDDING_RETRY_DELAY_SECONDS)
+def embed_texts(texts: list[str], task_type: str) -> list[list[float]]:
+    return embedding_cache.embed(texts, task_type)
 
 
 def search_and_rerank(
