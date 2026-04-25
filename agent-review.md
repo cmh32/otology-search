@@ -90,6 +90,9 @@ Strong on intent and structure, weak on operational grounding.
 - [x] **Swap the forced-final-turn prompt** to a synthesis-only variant — final turn now uses a no-tools synthesis prompt.
 - [x] **Boost guideline authority/currentness in reranking** — guideline-intent queries now prioritize practice guidelines, U.S. specialty-society sources, guideline updates, and recent current-practice records.
 
+- [ ] **Validate and tune the reranking score weights.** The composite score formula (`semantic_score + 0.03*lexical + 0.02*mesh + 2.0*rrf_score + boosts`) is hand-picked with no empirical validation. The `2.0 * rrf_score` coefficient is large enough that BM25 rank still dominates final ordering even after semantic scoring. Run the benchmark across a sweep of weight combinations and pick values that maximize citation recall on known-answer questions.
+- [ ] **Use Meilisearch's native hybrid search for the first-stage fetch.** The current pipeline runs BM25-only in Meilisearch, then semantic reranks the top 60 afterward. Any paper that semantically matches the query but doesn't share vocabulary is excluded before the reranker ever sees it — a silent retrieval failure. Meilisearch supports hybrid search (BM25 + vector) natively via `vector` embeddings at index time and a `hybrid` search parameter. Pre-indexing document embeddings and enabling hybrid fetch would let the initial candidate pool surface semantic matches that pure keyword search misses.
+
 ## Smaller cleanups
 
 - [ ] Replace hardcoded `current_year = 2026` (`agent/server.py:209`) with `datetime.date.today().year`.
