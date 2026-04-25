@@ -79,7 +79,7 @@ Strong on intent and structure, weak on operational grounding.
 - [x] **Index and filter on `publication_type`** — added to PubMed fetch output, Meilisearch retrieval/filter path, search tool schema, reranking context, and system prompt.
 - [ ] **Add an anti-hallucination citation rule** — system prompt addition + post-hoc URL verification in `/chat` handler.
 - [ ] **Dedupe papers across tool calls** — within a single agent turn, merge results from parallel searches and drop duplicate PMIDs before returning to the model.
-- [ ] **Switch to `gemini-embedding-001`** with asymmetric `task_type="retrieval_query"` / `"retrieval_document"`; raise default `max_results` to 10.
+- [x] **Switch to `gemini-embedding-001`** with asymmetric `task_type="retrieval_query"` / `"retrieval_document"`; raise default `max_results` to 10.
 - [ ] **Add RRF** between Meili rank and embedding rank; stop relying solely on rerank within top-60.
 - [ ] **Swap the forced-final-turn prompt** to a synthesis-only variant (`agent/server.py:379-383`).
 

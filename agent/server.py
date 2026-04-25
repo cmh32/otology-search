@@ -110,7 +110,7 @@ SEARCH_TOOL = types.Tool(function_declarations=[
                 ),
                 "max_results": types.Schema(
                     type="INTEGER",
-                    description="Optional number of reranked papers to return (default 8, max 12)",
+                    description="Optional number of reranked papers to return (default 10, max 12)",
                 ),
             },
             required=["query"],
@@ -127,6 +127,7 @@ FINAL_CONFIG = types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION
 MAX_TOOL_TURNS = 5
 FETCH_LIMIT = 60   # candidates pulled from Meilisearch
 RERANK_LIMIT = 12  # returned to the model after semantic re-ranking
+EMBEDDING_MODEL = "gemini-embedding-001"
 
 
 def _quote_filter(value: str) -> str:
@@ -217,15 +218,21 @@ def semantic_rerank(query: str, hits: list) -> list:
             )
             for h in hits
         ]
-        embeddings = client.models.embed_content(
-            model="text-embedding-004",
-            contents=[query] + snippets,
+        query_embedding = client.models.embed_content(
+            model=EMBEDDING_MODEL,
+            contents=query,
+            config=types.EmbedContentConfig(task_type="retrieval_query"),
+        ).embeddings[0]
+        document_embeddings = client.models.embed_content(
+            model=EMBEDDING_MODEL,
+            contents=snippets,
+            config=types.EmbedContentConfig(task_type="retrieval_document"),
         ).embeddings
-        query_emb = embeddings[0].values
+        query_emb = query_embedding.values
         query_terms = {term.lower() for term in query.split() if len(term) > 2}
         scored = []
         current_year = 2026
-        for hit, emb in zip(hits, embeddings[1:]):
+        for hit, emb in zip(hits, document_embeddings):
             semantic_score = _cosine(query_emb, emb.values)
             title = hit.get("title", "").lower()
             abstract = hit.get("abstract", "").lower()
@@ -276,7 +283,7 @@ def search_and_rerank(
     journal: str | None = None,
     max_results: int | None = None,
 ) -> dict:
-    requested = max(1, min(int(max_results or 8), RERANK_LIMIT))
+    requested = max(1, min(int(max_results or 10), RERANK_LIMIT))
     hits = fetch_papers(
         query=query,
         mesh_terms=mesh_terms,
