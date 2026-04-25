@@ -183,6 +183,7 @@ OUT_OF_SCOPE_TERMS = {
 }
 
 URL_PATTERN = re.compile(r"https://pubmed\.ncbi\.nlm\.nih\.gov/\d+/?")
+CITATION_PATTERN = re.compile(r"\[([^\]]+)\]\((https://pubmed\.ncbi\.nlm\.nih\.gov/\d+/?)\)")
 
 QUERY_EXPANSIONS = {
     "ssnhl": "sudden sensorineural hearing loss",
@@ -810,6 +811,13 @@ def filter_unretrieved_citations(reply: str, retrieved_urls: set[str]) -> tuple[
     return (reply or "") + warning, missing
 
 
+def extracted_citations(reply: str) -> list[dict]:
+    return [
+        {"label": label, "url": url.rstrip("/") + "/"}
+        for label, url in CITATION_PATTERN.findall(reply or "")
+    ]
+
+
 @app.after_request
 def add_cors(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
@@ -835,6 +843,7 @@ def chat():
 
     data = request.get_json()
     messages = data.get("messages", [])
+    include_trace = bool(data.get("trace"))
     if not messages:
         return jsonify({"error": "No messages provided"}), 400
 
@@ -842,12 +851,15 @@ def chat():
     print(f"\n[user] {last_message[:80]}{'...' if len(last_message) > 80 else ''}")
 
     if is_out_of_scope(last_message):
-        return jsonify({
+        response_obj = {
             "reply": (
                 "That question is outside this otology-focused literature index. "
                 "I can help with otology, hearing, vestibular, ear surgery, and closely related neurotology questions."
             )
-        })
+        }
+        if include_trace:
+            response_obj["trace"] = {"out_of_scope": True, "tool_calls": []}
+        return jsonify(response_obj)
 
     # Build contents from full conversation history
     contents = []
@@ -860,6 +872,12 @@ def chat():
         seen_pmids = set()
         retrieved_urls = set()
         skip_rerank_for_request = False
+        trace = {
+            "out_of_scope": False,
+            "tool_calls": [],
+            "forced_final": False,
+            "rerank_disabled": False,
+        }
 
         # Agentic tool-calling loop
         for turn in range(MAX_TOOL_TURNS):
@@ -875,7 +893,14 @@ def chat():
             # No tool calls → model is done, return the text answer
             if not function_calls:
                 reply, missing_urls = filter_unretrieved_citations(response.text, retrieved_urls)
-                return jsonify({"reply": reply, "citation_warnings": missing_urls})
+                response_obj = {
+                    "reply": reply,
+                    "citation_warnings": missing_urls,
+                    "citations": extracted_citations(reply),
+                }
+                if include_trace:
+                    response_obj["trace"] = trace
+                return jsonify(response_obj)
 
             print(f"  [agent turn {turn + 1}] {len(function_calls)} search(es)")
             # Strip any text preamble emitted alongside tool calls to keep context lean
@@ -915,6 +940,7 @@ def chat():
                         raise
                     print("  [rerank disabled] embedding quota hit; using keyword order for this request")
                     skip_rerank_for_request = True
+                    trace["rerank_disabled"] = True
                     result = search_and_rerank(
                         query=query,
                         mesh_terms=mesh_terms,
@@ -930,6 +956,26 @@ def chat():
                     url = paper.get("url")
                     if url:
                         retrieved_urls.add(url.rstrip("/") + "/")
+                trace["tool_calls"].append({
+                    "turn": turn + 1,
+                    "query": query,
+                    "filters": result.get("filters", {}),
+                    "query_variants": result.get("query_variants", []),
+                    "recovery_notes": result.get("recovery_notes", []),
+                    "count": result.get("count", 0),
+                    "papers": [
+                        {
+                            "pmid": paper.get("pmid"),
+                            "title": paper.get("title"),
+                            "year": paper.get("year"),
+                            "publication_type": paper.get("publication_type", []),
+                            "score": paper.get("score"),
+                            "semantic_score": paper.get("semantic_score"),
+                            "url": paper.get("url"),
+                        }
+                        for paper in result.get("papers", [])
+                    ],
+                })
                 tool_parts.append(types.Part(
                     function_response=types.FunctionResponse(
                         name=fc.name,
@@ -947,7 +993,15 @@ def chat():
             config=FINAL_CONFIG,
         )
         reply, missing_urls = filter_unretrieved_citations(response.text, retrieved_urls)
-        return jsonify({"reply": reply, "citation_warnings": missing_urls})
+        trace["forced_final"] = True
+        response_obj = {
+            "reply": reply,
+            "citation_warnings": missing_urls,
+            "citations": extracted_citations(reply),
+        }
+        if include_trace:
+            response_obj["trace"] = trace
+        return jsonify(response_obj)
 
     except urllib.error.URLError as e:
         print(f"[error] Meilisearch: {e}")
