@@ -171,6 +171,13 @@ EMBEDDING_RETRY_DELAY_SECONDS = 2
 EMBEDDING_CACHE_PATH = os.environ.get("EMBEDDING_CACHE_PATH", "data/runtime/embedding-cache.sqlite")
 DISABLE_EMBEDDING_CACHE = os.environ.get("DISABLE_EMBEDDING_CACHE", "").lower() in {"1", "true", "yes"}
 MIN_FILTERED_HITS = 3
+MEILI_HYBRID_SEARCH = os.environ.get("MEILI_HYBRID_SEARCH", "").lower() in {"1", "true", "yes"}
+MEILI_HYBRID_EMBEDDER = os.environ.get("MEILI_HYBRID_EMBEDDER", "otology_openai_large")
+MEILI_HYBRID_PROVIDER = os.environ.get("MEILI_HYBRID_PROVIDER", "openai").strip().lower()
+MEILI_HYBRID_MODEL = os.environ.get("MEILI_HYBRID_MODEL", "text-embedding-3-large")
+MEILI_HYBRID_SEMANTIC_RATIO = float(os.environ.get("MEILI_HYBRID_SEMANTIC_RATIO", "0.3"))
+BOOST_TOPIC_GATE_THRESHOLD = float(os.environ.get("BOOST_TOPIC_GATE_THRESHOLD", "0.55"))
+BOOST_TOPIC_GATE_FACTOR = float(os.environ.get("BOOST_TOPIC_GATE_FACTOR", "0.25"))
 
 OUT_OF_SCOPE_TERMS = {
     "rhinosinusitis",
@@ -404,6 +411,13 @@ def fetch_papers(
             "url",
         ],
     }
+    if MEILI_HYBRID_SEARCH:
+        query_vector = hybrid_query_embedding(query)
+        payload_obj["vector"] = query_vector
+        payload_obj["hybrid"] = {
+            "embedder": MEILI_HYBRID_EMBEDDER,
+            "semanticRatio": MEILI_HYBRID_SEMANTIC_RATIO,
+        }
     if filters:
         payload_obj["filter"] = filters
 
@@ -419,7 +433,8 @@ def fetch_papers(
     with urllib.request.urlopen(req) as resp:
         data = json.loads(resp.read())
         hits = data.get("hits", [])
-        print(f"  [meilisearch] '{query}' filters={filters or 'none'} → {len(hits)} hits")
+        mode = "hybrid" if MEILI_HYBRID_SEARCH else "bm25"
+        print(f"  [meilisearch:{mode}] '{query}' filters={filters or 'none'} → {len(hits)} hits")
         return hits
 
 
@@ -575,6 +590,12 @@ class EmbeddingCache:
 
 embedding_provider = EmbeddingProvider(EMBEDDING_PROVIDER, EMBEDDING_MODEL)
 embedding_cache = EmbeddingCache(EMBEDDING_CACHE_PATH, embedding_provider)
+hybrid_embedding_provider = EmbeddingProvider(MEILI_HYBRID_PROVIDER, MEILI_HYBRID_MODEL)
+hybrid_embedding_cache = EmbeddingCache(EMBEDDING_CACHE_PATH, hybrid_embedding_provider)
+
+
+def hybrid_query_embedding(query: str) -> list[float]:
+    return hybrid_embedding_cache.embed([query], "retrieval_query")[0]
 
 
 def semantic_rerank(query: str, hits: list) -> list:
@@ -622,15 +643,25 @@ def semantic_rerank(query: str, hits: list) -> list:
                 term in pub_type for term in query_terms for pub_type in publication_types
             )
             year = hit.get("year")
-            recency_boost = recency_boost_for_year(year, guideline_intent)
-            hierarchy_boost = publication_type_boost(hit.get("publication_type", []))
-            source_boost = guideline_source_boost(raw_title, raw_abstract, journal) if guideline_intent else 0.0
+            raw_recency_boost = recency_boost_for_year(year, guideline_intent)
+            raw_hierarchy_boost = publication_type_boost(hit.get("publication_type", []))
+            raw_source_boost = guideline_source_boost(raw_title, raw_abstract, journal) if guideline_intent else 0.0
+            topic_boost_factor = (
+                1.0 if semantic_score >= BOOST_TOPIC_GATE_THRESHOLD else BOOST_TOPIC_GATE_FACTOR
+            )
+            recency_boost = raw_recency_boost * topic_boost_factor
+            hierarchy_boost = raw_hierarchy_boost * topic_boost_factor
+            source_boost = raw_source_boost * topic_boost_factor
+            lexical_component = 0.03 * lexical_overlap
+            mesh_component = 0.02 * mesh_overlap
+            publication_type_component = 0.04 * publication_type_overlap
+            rrf_component = 2.0 * hit.get("_rrf_score", 0.0)
             score = (
                 semantic_score
-                + (0.03 * lexical_overlap)
-                + (0.02 * mesh_overlap)
-                + (0.04 * publication_type_overlap)
-                + (2.0 * hit.get("_rrf_score", 0.0))
+                + lexical_component
+                + mesh_component
+                + publication_type_component
+                + rrf_component
                 + hierarchy_boost
                 + source_boost
                 + recency_boost
@@ -639,7 +670,19 @@ def semantic_rerank(query: str, hits: list) -> list:
             enriched["_score"] = round(score, 4)
             enriched["_semantic_score"] = round(semantic_score, 4)
             enriched["_hierarchy_boost"] = round(hierarchy_boost, 4)
+            enriched["_raw_hierarchy_boost"] = round(raw_hierarchy_boost, 4)
             enriched["_source_boost"] = round(source_boost, 4)
+            enriched["_raw_source_boost"] = round(raw_source_boost, 4)
+            enriched["_recency_boost"] = round(recency_boost, 4)
+            enriched["_raw_recency_boost"] = round(raw_recency_boost, 4)
+            enriched["_topic_boost_factor"] = round(topic_boost_factor, 4)
+            enriched["_lexical_overlap"] = lexical_overlap
+            enriched["_mesh_overlap"] = mesh_overlap
+            enriched["_publication_type_overlap"] = publication_type_overlap
+            enriched["_lexical_component"] = round(lexical_component, 4)
+            enriched["_mesh_component"] = round(mesh_component, 4)
+            enriched["_publication_type_component"] = round(publication_type_component, 4)
+            enriched["_rrf_component"] = round(rrf_component, 4)
             scored.append(enriched)
 
         scored.sort(key=lambda hit: hit["_score"], reverse=True)
@@ -671,21 +714,38 @@ def lexical_policy_rerank(query: str, hits: list) -> list:
         )
         hierarchy_boost = publication_type_boost(hit.get("publication_type", []))
         source_boost = guideline_source_boost(raw_title, raw_abstract, journal) if guideline_intent else 0.0
+        recency_boost = recency_boost_for_year(hit.get("year"), guideline_intent)
+        lexical_component = 0.03 * lexical_overlap
+        mesh_component = 0.02 * mesh_overlap
+        publication_type_component = 0.04 * publication_type_overlap
+        rrf_component = 2.0 * hit.get("_rrf_score", 0.0)
         score = (
             (1.0 / (60 + rank))
-            + (0.03 * lexical_overlap)
-            + (0.02 * mesh_overlap)
-            + (0.04 * publication_type_overlap)
-            + (2.0 * hit.get("_rrf_score", 0.0))
+            + lexical_component
+            + mesh_component
+            + publication_type_component
+            + rrf_component
             + hierarchy_boost
             + source_boost
-            + recency_boost_for_year(hit.get("year"), guideline_intent)
+            + recency_boost
         )
         enriched = dict(hit)
         enriched["_score"] = round(score, 4)
         enriched["_semantic_score"] = None
         enriched["_hierarchy_boost"] = round(hierarchy_boost, 4)
+        enriched["_raw_hierarchy_boost"] = round(hierarchy_boost, 4)
         enriched["_source_boost"] = round(source_boost, 4)
+        enriched["_raw_source_boost"] = round(source_boost, 4)
+        enriched["_recency_boost"] = round(recency_boost, 4)
+        enriched["_raw_recency_boost"] = round(recency_boost, 4)
+        enriched["_topic_boost_factor"] = None
+        enriched["_lexical_overlap"] = lexical_overlap
+        enriched["_mesh_overlap"] = mesh_overlap
+        enriched["_publication_type_overlap"] = publication_type_overlap
+        enriched["_lexical_component"] = round(lexical_component, 4)
+        enriched["_mesh_component"] = round(mesh_component, 4)
+        enriched["_publication_type_component"] = round(publication_type_component, 4)
+        enriched["_rrf_component"] = round(rrf_component, 4)
         scored.append(enriched)
 
     scored.sort(key=lambda hit: hit["_score"], reverse=True)
@@ -783,6 +843,21 @@ def search_and_rerank(
             "abstract": h.get("abstract", ""),
             "score": h.get("_score"),
             "semantic_score": h.get("_semantic_score"),
+            "rrf_score": h.get("_rrf_score"),
+            "rrf_component": h.get("_rrf_component"),
+            "lexical_overlap": h.get("_lexical_overlap"),
+            "mesh_overlap": h.get("_mesh_overlap"),
+            "publication_type_overlap": h.get("_publication_type_overlap"),
+            "lexical_component": h.get("_lexical_component"),
+            "mesh_component": h.get("_mesh_component"),
+            "publication_type_component": h.get("_publication_type_component"),
+            "hierarchy_boost": h.get("_hierarchy_boost"),
+            "raw_hierarchy_boost": h.get("_raw_hierarchy_boost"),
+            "source_boost": h.get("_source_boost"),
+            "raw_source_boost": h.get("_raw_source_boost"),
+            "recency_boost": h.get("_recency_boost"),
+            "raw_recency_boost": h.get("_raw_recency_boost"),
+            "topic_boost_factor": h.get("_topic_boost_factor"),
         })
 
     return {
