@@ -198,6 +198,7 @@ OUT_OF_SCOPE_TERMS = {
 
 URL_PATTERN = re.compile(r"https://pubmed\.ncbi\.nlm\.nih\.gov/\d+/?")
 CITATION_PATTERN = re.compile(r"\[([^\]]+)\]\((https://pubmed\.ncbi\.nlm\.nih\.gov/\d+/?)\)")
+DOUBLE_BRACKET_CITATION_PATTERN = re.compile(r"\[\[([^\]]+)\]\((https://pubmed\.ncbi\.nlm\.nih\.gov/\d+/?)\)")
 
 QUERY_EXPANSIONS = {
     "ssnhl": "sudden sensorineural hearing loss",
@@ -880,6 +881,11 @@ def search_and_rerank(
     }
 
 
+def normalize_citation_markdown(reply: str) -> str:
+    """Repair harmless citation Markdown glitches before validation."""
+    return DOUBLE_BRACKET_CITATION_PATTERN.sub(r"[\1](\2)", reply or "")
+
+
 def filter_unretrieved_citations(reply: str, retrieved_urls: set[str]) -> tuple[str, list[str]]:
     cited_urls = set(URL_PATTERN.findall(reply or ""))
     missing = sorted(url for url in cited_urls if url.rstrip("/") + "/" not in retrieved_urls and url.rstrip("/") not in retrieved_urls)
@@ -901,8 +907,20 @@ def extracted_citations(reply: str) -> list[dict]:
         normalized = url.rstrip("/") + "/"
         if normalized not in seen:
             seen.add(normalized)
-            result.append({"label": label, "url": normalized})
+            result.append({"label": label.lstrip("[").strip(), "url": normalized})
     return result
+
+
+def prepare_citation_response(reply: str, retrieved_urls: set[str]) -> tuple[str, list[str], list[dict], list[str]]:
+    normalized_reply = normalize_citation_markdown(reply)
+    checked_reply, missing_urls = filter_unretrieved_citations(normalized_reply, retrieved_urls)
+    citations = extracted_citations(checked_reply)
+    format_warnings = []
+    if retrieved_urls and checked_reply.strip() and not citations:
+        format_warnings.append(
+            "No valid PubMed citation links were parsed even though the literature search returned papers."
+        )
+    return checked_reply, missing_urls, citations, format_warnings
 
 
 @app.after_request
@@ -979,11 +997,12 @@ def chat():
 
             # No tool calls → model is done, return the text answer
             if not function_calls:
-                reply, missing_urls = filter_unretrieved_citations(response.text, retrieved_urls)
+                reply, missing_urls, citations, format_warnings = prepare_citation_response(response.text, retrieved_urls)
                 response_obj = {
                     "reply": reply,
                     "citation_warnings": missing_urls,
-                    "citations": extracted_citations(reply),
+                    "citation_format_warnings": format_warnings,
+                    "citations": citations,
                 }
                 if include_trace:
                     response_obj["trace"] = trace
@@ -1079,12 +1098,13 @@ def chat():
             contents=contents,
             config=FINAL_CONFIG,
         )
-        reply, missing_urls = filter_unretrieved_citations(response.text, retrieved_urls)
+        reply, missing_urls, citations, format_warnings = prepare_citation_response(response.text, retrieved_urls)
         trace["forced_final"] = True
         response_obj = {
             "reply": reply,
             "citation_warnings": missing_urls,
-            "citations": extracted_citations(reply),
+            "citation_format_warnings": format_warnings,
+            "citations": citations,
         }
         if include_trace:
             response_obj["trace"] = trace

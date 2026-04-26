@@ -183,6 +183,7 @@ Response:
   "reply": "...",
   "citations": [{"label": "Title (Year)", "url": "https://pubmed.ncbi.nlm.nih.gov/..."}],
   "citation_warnings": [],
+  "citation_format_warnings": [],
   "trace": {
     "tool_calls": [...],
     "forced_final": false,
@@ -192,7 +193,7 @@ Response:
 }
 ```
 
-`citation_warnings` lists any PubMed URLs in the answer that were not returned by tool calls. `trace` is only included when `"trace": true` is sent in the request.
+`citation_warnings` lists any PubMed URLs in the answer that were not returned by tool calls. `citation_format_warnings` lists citation-format problems such as an answer with retrieved papers but no valid PubMed citation links. `trace` is only included when `"trace": true` is sent in the request.
 
 The `search_papers` tool accepts: `query` (required), `mesh_terms`, `publication_types`, `year_from`, `year_to`, `journal`, `max_results` (default 10, max 12).
 

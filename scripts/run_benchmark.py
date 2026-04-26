@@ -84,6 +84,7 @@ def run_question(client, question: dict) -> dict:
         "reply": payload.get("reply"),
         "citations": payload.get("citations", []),
         "citation_warnings": payload.get("citation_warnings", []),
+        "citation_format_warnings": payload.get("citation_format_warnings", []),
         "trace": payload.get("trace", {}),
         "error": payload.get("error"),
         "server_log": stdout_buffer.getvalue().splitlines(),
@@ -106,6 +107,7 @@ def run_retrieval_question(question: dict, max_results: int) -> dict:
         "reply": None,
         "citations": [],
         "citation_warnings": [],
+        "citation_format_warnings": [],
         "trace": {
             "retrieval_only": True,
             "tool_calls": [result],
@@ -147,6 +149,7 @@ def summarize_result(result: dict) -> dict:
         "tool_calls": len(tool_calls),
         "citations": len(result.get("citations") or []),
         "citation_warnings": len(result.get("citation_warnings") or []),
+        "citation_format_warnings": len(result.get("citation_format_warnings") or []),
         "zero_citations": (
             not trace.get("out_of_scope")
             and not trace.get("retrieval_only")
@@ -171,8 +174,8 @@ def write_summary(path: Path, metadata: dict, results: list[dict]) -> None:
         f"- Embedding model: `{metadata['embedding_model']}`",
         f"- Mode: `{'retrieval-only' if metadata.get('retrieval_only') else 'full-agent'}`",
         "",
-        "| ID | Status | Tools | Cites | Zero Cites | Warnings | Forced | Rerank Fallback | Question |",
-        "|---:|---:|---:|---:|:---:|---:|:---:|:---:|---|",
+        "| ID | Status | Tools | Cites | Zero Cites | URL Warnings | Format Warnings | Forced | Rerank Fallback | Question |",
+        "|---:|---:|---:|---:|:---:|---:|---:|:---:|:---:|---|",
     ]
     for result in results:
         trace = result.get("trace") or {}
@@ -186,6 +189,7 @@ def write_summary(path: Path, metadata: dict, results: list[dict]) -> None:
             f"{len(result.get('citations') or [])} | "
             f"{'Y' if zero_citations else ''} | "
             f"{len(result.get('citation_warnings') or [])} | "
+            f"{len(result.get('citation_format_warnings') or [])} | "
             f"{'Y' if trace.get('forced_final') else ''} | "
             f"{'Y' if trace.get('rerank_disabled') or rerank_fallback else ''} | "
             f"{question} |"
@@ -211,6 +215,8 @@ def write_answers(path: Path, results_path: Path, results: list[dict]) -> None:
             f"- Elapsed: `{result.get('elapsed_seconds')}s`",
             f"- Tool calls: `{len(tool_calls)}`",
             f"- Parsed citations: `{len(result.get('citations') or [])}`",
+            f"- Citation URL warnings: `{len(result.get('citation_warnings') or [])}`",
+            f"- Citation format warnings: `{len(result.get('citation_format_warnings') or [])}`",
             "",
         ])
 
