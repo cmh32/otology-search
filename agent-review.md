@@ -35,6 +35,7 @@ The pipeline is a solid keyword → embedding rerank design, but there are real 
    - **Status:** partially fixed with lightweight abbreviation expansion and guideline/evidence suffix variants.
 
 7. **Journal filter is exact match** (`agent/server.py:140`). Brittle — "JAMA Otolaryngol Head Neck Surg" vs "JAMA Otolaryngology - Head & Neck Surgery" will silently zero-out.
+   - **Status:** fixed. Journal constraints now bias the Meilisearch query and apply normalized fuzzy post-filtering, including common journal abbreviation expansions such as `Otol` → `Otology`, `Neurotol` → `Neurotology`, and `Surg` → `Surgery`.
 
 8. **Silent zero-hit failure.** When filters eliminate all hits, the tool returns `count: 0` with no hint to the model ("your year filter removed 14 hits, your journal filter removed 3"). The model can't self-correct.
    - **Status:** fixed for strict filters. The tool now retries low-hit searches after relaxing journal, MeSH, or publication-type filters and returns `recovery_notes`.
@@ -114,7 +115,7 @@ Strong on intent and structure, weak on operational grounding.
 ## Smaller cleanups
 
 - [x] Replace hardcoded `current_year = 2026` (`agent/server.py:209`) with `datetime.date.today().year`.
-- [ ] Make the journal filter case-insensitive or fuzzy (`agent/server.py:140`).
+- [x] Make the journal filter case-insensitive or fuzzy (`agent/server.py:140`).
 - [x] When the tool returns `count: 0`, include a hint about which filters eliminated hits.
 - [ ] Add search-budget guidance to system prompt (model doesn't know it has 5 tool turns).
 - [ ] Add 0-hit recovery instruction to system prompt.

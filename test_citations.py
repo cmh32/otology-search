@@ -11,6 +11,8 @@ os.environ.setdefault("GEMINI_API_KEY", "test")
 
 from agent.server import (  # noqa: E402
     extracted_citations,
+    journal_matches,
+    journal_match_score,
     normalize_citation_markdown,
     prepare_citation_response,
     topic_penalty_for_hit,
@@ -98,6 +100,45 @@ class TopicPenaltyTests(unittest.TestCase):
         )
 
         self.assertEqual(penalty, 0.0)
+
+
+class JournalFilterTests(unittest.TestCase):
+    def test_matches_abbreviated_jama_otolaryngology_title(self):
+        self.assertTrue(
+            journal_matches(
+                "JAMA Otolaryngol Head Neck Surg",
+                "JAMA Otolaryngology-- Head & Neck Surgery",
+            )
+        )
+
+    def test_matches_abbreviated_otology_neurotology_title(self):
+        self.assertTrue(
+            journal_matches(
+                "Otol Neurotol",
+                "Otology & Neurotology",
+            )
+        )
+
+    def test_rejects_unrelated_journal(self):
+        self.assertLess(
+            journal_match_score("Otolaryngology Head Neck Surgery", "The Laryngoscope"),
+            0.8,
+        )
+        self.assertFalse(journal_matches("Otolaryngology Head Neck Surgery", "The Laryngoscope"))
+
+    def test_distinctive_journal_token_must_match(self):
+        self.assertFalse(
+            journal_matches(
+                "JAMA Otolaryngol Head Neck Surg",
+                "Archives of otolaryngology--head & neck surgery",
+            )
+        )
+        self.assertFalse(
+            journal_matches(
+                "Otolaryngology Head Neck Surgery",
+                "Archives of otolaryngology--head & neck surgery",
+            )
+        )
 
 
 if __name__ == "__main__":

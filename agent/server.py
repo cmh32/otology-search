@@ -146,7 +146,7 @@ SEARCH_TOOL = types.Tool(function_declarations=[
                 ),
                 "journal": types.Schema(
                     type="STRING",
-                    description="Optional exact journal name filter",
+                    description="Optional journal name or abbreviation to constrain results",
                 ),
                 "max_results": types.Schema(
                     type="INTEGER",
@@ -293,6 +293,97 @@ def _quote_filter(value: str) -> str:
     return json.dumps(value)
 
 
+JOURNAL_TOKEN_ALIASES = {
+    "am": "american",
+    "ann": "annals",
+    "arch": "archives",
+    "assoc": "association",
+    "clin": "clinical",
+    "int": "international",
+    "intl": "international",
+    "j": "journal",
+    "laryngol": "laryngology",
+    "med": "medicine",
+    "neurotol": "neurotology",
+    "otol": "otology",
+    "otolaryngol": "otolaryngology",
+    "otorhinolaryngol": "otorhinolaryngology",
+    "pediatr": "pediatric",
+    "surg": "surgery",
+}
+
+JOURNAL_TOKEN_STOPWORDS = {
+    "a",
+    "and",
+    "de",
+    "der",
+    "for",
+    "in",
+    "of",
+    "the",
+}
+
+JOURNAL_DISTINCTIVE_TOKENS = {
+    "archives",
+    "bmj",
+    "cochrane",
+    "jama",
+    "lancet",
+    "laryngoscope",
+}
+
+
+def journal_tokens(value: str) -> set[str]:
+    tokens = set()
+    for token in re.findall(r"[a-z0-9]+", (value or "").lower()):
+        token = JOURNAL_TOKEN_ALIASES.get(token, token)
+        if token and token not in JOURNAL_TOKEN_STOPWORDS:
+            tokens.add(token)
+    return tokens
+
+
+def journal_match_score(requested: str, actual: str) -> float:
+    requested_tokens = journal_tokens(requested)
+    actual_tokens = journal_tokens(actual)
+    if not requested_tokens or not actual_tokens:
+        return 0.0
+    if requested_tokens <= actual_tokens:
+        return 1.0
+    if actual_tokens <= requested_tokens:
+        return 1.0
+    if requested_tokens == actual_tokens:
+        return 1.0
+
+    overlap = requested_tokens & actual_tokens
+    recall = len(overlap) / len(requested_tokens)
+    precision = len(overlap) / len(actual_tokens)
+    return (2 * precision * recall / (precision + recall)) if precision + recall else 0.0
+
+
+def journal_matches(requested: str, actual: str) -> bool:
+    requested_tokens = journal_tokens(requested)
+    actual_tokens = journal_tokens(actual)
+    if not requested_tokens or not actual_tokens:
+        return False
+
+    distinctive_requested = requested_tokens & JOURNAL_DISTINCTIVE_TOKENS
+    if distinctive_requested and not distinctive_requested <= actual_tokens:
+        return False
+    distinctive_actual = actual_tokens & JOURNAL_DISTINCTIVE_TOKENS
+    if distinctive_actual and not distinctive_actual <= requested_tokens:
+        return False
+
+    if requested_tokens <= actual_tokens:
+        return True
+    if actual_tokens <= requested_tokens:
+        return True
+
+    score = journal_match_score(requested, actual)
+    if len(requested_tokens) <= 2:
+        return score >= 0.95
+    return score >= 0.85
+
+
 def is_out_of_scope(message: str) -> bool:
     normalized = message.lower()
     return any(term in normalized for term in OUT_OF_SCOPE_TERMS)
@@ -434,8 +525,6 @@ def fetch_papers(
         filters.append(f"year >= {int(year_from)}")
     if year_to is not None:
         filters.append(f"year <= {int(year_to)}")
-    if journal:
-        filters.append(f"journal = {_quote_filter(journal)}")
     if mesh_terms:
         quoted = ", ".join(_quote_filter(term) for term in mesh_terms if term)
         if quoted:
@@ -445,8 +534,9 @@ def fetch_papers(
         if quoted:
             filters.append(f"publication_type IN [{quoted}]")
 
+    search_query = f"{query} {journal}".strip() if journal else query
     payload_obj = {
-        "q": query,
+        "q": search_query,
         "limit": max(1, min(int(limit or FETCH_LIMIT), FETCH_LIMIT)),
         "attributesToRetrieve": [
             "pmid",
@@ -483,8 +573,18 @@ def fetch_papers(
     with urllib.request.urlopen(req) as resp:
         data = json.loads(resp.read())
         hits = data.get("hits", [])
+        if journal:
+            matched_hits = []
+            for hit in hits:
+                score = journal_match_score(journal, hit.get("journal", ""))
+                if journal_matches(journal, hit.get("journal", "")):
+                    enriched = dict(hit)
+                    enriched["_journal_match_score"] = round(score, 4)
+                    matched_hits.append(enriched)
+            hits = matched_hits
         mode = "hybrid" if MEILI_HYBRID_SEARCH else "bm25"
-        print(f"  [meilisearch:{mode}] '{query}' filters={filters or 'none'} → {len(hits)} hits")
+        journal_note = f" journal~={journal!r}" if journal else ""
+        print(f"  [meilisearch:{mode}] '{search_query}' filters={filters or 'none'}{journal_note} → {len(hits)} hits")
         return hits
 
 
@@ -915,6 +1015,7 @@ def search_and_rerank(
             "raw_recency_boost": h.get("_raw_recency_boost"),
             "topic_boost_factor": h.get("_topic_boost_factor"),
             "topic_penalty": h.get("_topic_penalty"),
+            "journal_match_score": h.get("_journal_match_score"),
         })
 
     return {

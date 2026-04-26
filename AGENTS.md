@@ -128,8 +128,7 @@ Query → expand to up to 5 variants → Meilisearch native hybrid fetch by defa
 
 ## Known gotchas
 
-- `current_year = 2026` is hardcoded in `recency_boost_for_year` (`server.py:355`) — should use `datetime.date.today().year`
-- Journal filter is exact-match and case-sensitive — brittle for journal name variants
+- Journal constraints are fuzzy post-filters, not exact Meilisearch filters; low-hit searches still retry without the journal constraint and report `recovery_notes`
 - Embedding cache lives at `data/runtime/embedding-cache.sqlite` (gitignored); set `DISABLE_EMBEDDING_CACHE=1` to bypass
 - Native hybrid search is enabled by default; set `MEILI_HYBRID_SEARCH=0` to force BM25-only first-stage fetch. The app still applies its own semantic reranker after Meili returns candidates
 - The model is `gemma-4-31b-it` (Gemma 4, not Gemini) — it supports native function-calling via the Google GenAI API

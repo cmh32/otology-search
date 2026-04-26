@@ -199,6 +199,8 @@ Response:
 
 The `search_papers` tool accepts: `query` (required), `mesh_terms`, `publication_types`, `year_from`, `year_to`, `journal`, `max_results` (default 10, max 12).
 
+Journal constraints are fuzzy identity filters, not broad specialty-family filters. The tool expands common abbreviations and tolerates long official journal names, so `Otol Neurotol` can match `Otology & Neurotology : official publication...`. Distinctive journal identity tokens still have to match: `JAMA Otolaryngol Head Neck Surg` should not match `Archives of Otolaryngology--Head & Neck Surgery` just because both share `otolaryngology`, `head`, `neck`, and `surgery`. If a journal constraint is too narrow, the low-hit recovery path retries without it and reports that in `recovery_notes`.
+
 ## Benchmark
 
 `benchmark.md` contains 27 evaluation questions across seven categories:
@@ -268,5 +270,4 @@ See `agent-review.md` for a full list. Highest-priority open items:
 
 - Reranking weight validation — the composite score coefficients are hand-tuned; a sweep against benchmark citation recall could improve ordering
 - Surgical comparison query expansion/corpus coverage — some surgical questions still retrieve broad or adjacent-topic evidence
-- Hardcoded `current_year = 2026` in `recency_boost_for_year` should use `datetime.date.today().year`
 - System prompt additions: search-budget guidance, 0-hit recovery instruction, conflict-handling guidance (guideline vs. recent meta-analysis)
