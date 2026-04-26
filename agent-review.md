@@ -117,7 +117,7 @@ Strong on intent and structure, weak on operational grounding.
 - [x] Replace hardcoded `current_year = 2026` (`agent/server.py:209`) with `datetime.date.today().year`.
 - [x] Make the journal filter case-insensitive or fuzzy (`agent/server.py:140`).
 - [x] When the tool returns `count: 0`, include a hint about which filters eliminated hits.
-- [ ] Add search-budget guidance to system prompt (model doesn't know it has 5 tool turns).
+- [x] Add search-budget guidance to system prompt — prompt now tells the model it has at most 5 tool-call turns, to spend early turns on broad coverage, and to reserve a later turn for refinement when needed.
 - [ ] Add 0-hit recovery instruction to system prompt.
 - [ ] Reframe "Do not provide personal medical advice" for a clinician audience.
 - [ ] Add conflict-handling guidance to system prompt (guideline vs. recent meta-analysis).
