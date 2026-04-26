@@ -118,9 +118,9 @@ Strong on intent and structure, weak on operational grounding.
 - [x] Make the journal filter case-insensitive or fuzzy (`agent/server.py:140`).
 - [x] When the tool returns `count: 0`, include a hint about which filters eliminated hits.
 - [x] Add search-budget guidance to system prompt — prompt now tells the model it has at most 5 tool-call turns, to spend early turns on broad coverage, and to reserve a later turn for refinement when needed.
-- [ ] Add 0-hit recovery instruction to system prompt.
-- [ ] Reframe "Do not provide personal medical advice" for a clinician audience.
-- [ ] Add conflict-handling guidance to system prompt (guideline vs. recent meta-analysis).
+- [x] Add 0-hit recovery instruction to system prompt — prompt now tells the model to broaden by relaxing filters, using fewer terms, trying synonyms/abbreviations, and separating guideline/review searches.
+- [x] Reframe "Do not provide personal medical advice" for a clinician audience — prompt now asks for clinician-peer terminology while avoiding generic patient-facing disclaimers and patient-specific advice.
+- [x] Add conflict-handling guidance to system prompt — prompt now tells the model how to handle guideline vs newer review/trial conflicts.
 - [ ] Consider logging cited vs. retrieved papers to feed the benchmark scoring loop.
 - [x] Add out-of-scope handling for non-otology queries before tool use.
 - [x] Add a short embedding retry and per-request rerank disable path after embedding 429s.
