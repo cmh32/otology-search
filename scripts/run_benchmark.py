@@ -313,6 +313,11 @@ def git_commit() -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run otology benchmark questions through /chat.")
+    parser.add_argument(
+        "--benchmark-file",
+        default=str(ROOT / "benchmark.md"),
+        help="Markdown file containing benchmark questions in the benchmark.md format.",
+    )
     parser.add_argument("--questions", default="1-8", help="Question ids: all, 1-8, or comma list")
     parser.add_argument("--output-dir", default="benchmark-runs", help="Directory for timestamped run output")
     parser.add_argument(
@@ -333,7 +338,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    all_questions = load_questions(ROOT / "benchmark.md")
+    benchmark_file = Path(args.benchmark_file)
+    if not benchmark_file.is_absolute():
+        benchmark_file = ROOT / benchmark_file
+    all_questions = load_questions(benchmark_file)
     selected = parse_selection(args.questions, all_questions)
     if not selected:
         raise SystemExit(f"No benchmark questions matched {args.questions!r}")
@@ -345,6 +353,7 @@ def main() -> None:
     metadata = {
         "date": datetime.now().isoformat(timespec="seconds"),
         "git_commit": git_commit(),
+        "benchmark_file": str(benchmark_file),
         "question_selection": args.questions,
         "embedding_provider": server.EMBEDDING_PROVIDER,
         "embedding_model": server.EMBEDDING_MODEL,
