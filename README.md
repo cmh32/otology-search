@@ -5,6 +5,7 @@ A clinical literature assistant for an APRN specializing in otology. It answers 
 ## What it does
 
 - Retrieves relevant papers from a Meilisearch index of ~16,500 PubMed otology articles
+- Supports optional Meilisearch native hybrid search using precomputed document vectors
 - Runs up to five agentic tool-call turns to decompose multi-part questions
 - Returns a synthesized answer with inline citations to PubMed URLs
 - Flags any citation URLs that were not actually retrieved (hallucination guard)
@@ -27,7 +28,8 @@ Query expansion (abbreviations + guideline/evidence     │
 suffix variants, up to 5 variants per call)             │
      │                                                  │
      ▼                                                  │
-Meilisearch BM25 fetch (top 60 per variant)             │
+Meilisearch fetch (BM25 by default, optional native      │
+hybrid BM25 + vector search; top 60 per variant)        │
      │                                                  │
      ▼                                                  │
 RRF merge (weighted by variant index, keyed by PMID)    │
@@ -36,8 +38,8 @@ RRF merge (weighted by variant index, keyed by PMID)    │
 PMID deduplication (across tool calls within a request) │
      │                                                  │
      ▼                                                  │
-Semantic rerank (gemini-embedding-001, asymmetric       │
-task types) → composite score → top 10                  │
+Semantic rerank (configurable embedding provider,       │
+asymmetric task types) → composite score → top 10       │
      │                                                  │
      └── tool result back to model ─────────────────────┘
      │   (repeat up to 5 turns)
@@ -58,7 +60,21 @@ score = cosine_similarity(query, document)
       + recency_boost          # up to +0.18 for guideline queries (20-year window)
 ```
 
-Guideline-intent queries (containing "current", "guideline", "indications", etc.) activate the source and recency boosts. Embedding failures fall back to a lexical policy rerank that applies the same boosts without cosine similarity.
+Guideline-intent queries (containing "current", "guideline", "indications", etc.) activate the source and recency boosts. Evidence/source/recency boosts are topic-gated: when semantic similarity is below `BOOST_TOPIC_GATE_THRESHOLD` (default `0.55`), those boosts are multiplied by `BOOST_TOPIC_GATE_FACTOR` (default `0.25`) so off-topic guidelines do not outrank direct evidence as easily. Embedding failures fall back to a lexical policy rerank that applies the same boosts without cosine similarity.
+
+### Meilisearch hybrid search
+
+The hosted index has user-provided OpenAI `text-embedding-3-large` vectors for all 16,496 documents under the Meilisearch embedder name `otology_openai_large`. Enable native hybrid first-stage fetch with:
+
+```bash
+MEILI_HYBRID_SEARCH=1
+MEILI_HYBRID_EMBEDDER=otology_openai_large
+MEILI_HYBRID_PROVIDER=openai
+MEILI_HYBRID_MODEL=text-embedding-3-large
+MEILI_HYBRID_SEMANTIC_RATIO=0.3
+```
+
+Hybrid search affects the first-stage candidate pool only. The app still applies its own clinical semantic reranker afterward.
 
 ### Embedding cache
 
@@ -74,7 +90,8 @@ The index is built from PubMed using a broad MeSH-anchored otology query supplem
 
 - Python 3.11+
 - A running Meilisearch instance (the class hosts one at `http://search.858.mba:7700`)
-- A Google GenAI API key (Gemini API, used for both Gemma-4 and embeddings)
+- A Google GenAI API key (Gemini API, used for Gemma-4)
+- An OpenAI API key if using OpenAI embeddings, retrieval reranking, or Meilisearch hybrid query vectors
 
 ```bash
 pip install -r requirements.txt
@@ -86,6 +103,7 @@ Create a `.env` file (or export these directly):
 
 ```bash
 GEMINI_API_KEY=your_google_genai_key
+OPENAI_API_KEY=your_openai_key        # needed for OpenAI embeddings / hybrid query vectors
 MEILI_URL=http://search.858.mba:7700
 MEILI_INDEX=your_index_name
 MEILI_SEARCH_KEY=your_search_only_key
@@ -99,6 +117,13 @@ EMBEDDING_PROVIDER=gemini             # or "openai"
 EMBEDDING_MODEL=gemini-embedding-001  # overrides the default per provider
 EMBEDDING_CACHE_PATH=data/runtime/embedding-cache.sqlite
 DISABLE_EMBEDDING_CACHE=1             # bypass the SQLite cache
+MEILI_HYBRID_SEARCH=1                 # opt in to native Meilisearch hybrid search
+MEILI_HYBRID_EMBEDDER=otology_openai_large
+MEILI_HYBRID_PROVIDER=openai
+MEILI_HYBRID_MODEL=text-embedding-3-large
+MEILI_HYBRID_SEMANTIC_RATIO=0.3
+BOOST_TOPIC_GATE_THRESHOLD=0.55
+BOOST_TOPIC_GATE_FACTOR=0.25
 NCBI_API_KEY=your_ncbi_key            # optional; raises PubMed rate limit
 PORT=8080                             # default port
 ```
@@ -117,6 +142,18 @@ python3 scripts/upload.py my-data/pubmed-otology.json --reset \
 ```
 
 `fetch_pubmed.py` defaults to up to 10,000 broad articles plus supplemental pulls for high-value evidence types. Pass `--max N` to limit the broad fetch or `--no-supplemental` to skip the supplemental queries.
+
+To add or refresh native Meilisearch hybrid vectors for the existing corpus:
+
+```bash
+set -a && source .env && set +a
+EMBEDDING_MODEL=text-embedding-3-large \
+python3 scripts/vectorize_and_upload.py \
+  --embedding-batch-size 64 \
+  --upload-batch-size 100
+```
+
+This script uses the already-fetched JSON corpus; it does not re-scrape PubMed. It stores/reuses document embeddings in `data/runtime/embedding-cache.sqlite`, uploads `_vectors.otology_openai_large` for every document, and configures a Meilisearch `userProvided` embedder with 3072 dimensions.
 
 ### Run the server
 
@@ -180,7 +217,27 @@ python3 scripts/run_benchmark.py --questions 1-8
 python3 scripts/run_benchmark.py --questions all
 ```
 
-Results are saved to `benchmark-runs/<timestamp>/` as `results.json` (full traces) and `summary.md` (tabular overview).
+Full-agent results are saved to `benchmark-runs/<timestamp>/` as `results.json` (full traces), `summary.md` (tabular overview), and `answers.md` (readable answers, citations, and top retrieved PMIDs).
+
+For faster retrieval-only testing:
+
+```bash
+set -a && source .env && set +a
+EMBEDDING_PROVIDER=openai \
+EMBEDDING_MODEL=text-embedding-3-large \
+MEILI_HYBRID_SEARCH=1 \
+MEILI_HYBRID_EMBEDDER=otology_openai_large \
+MEILI_HYBRID_PROVIDER=openai \
+MEILI_HYBRID_MODEL=text-embedding-3-large \
+MEILI_HYBRID_SEMANTIC_RATIO=0.3 \
+python3 scripts/run_benchmark.py \
+  --questions all \
+  --retrieval-only \
+  --max-results 10 \
+  --stop-on-rerank-fallback
+```
+
+Retrieval-only runs also write `retrieval.md`, including title, year, publication type, score, semantic score, RRF contribution, lexical/MeSH/publication-type components, boosts, and the topic-gate factor. `--stop-on-rerank-fallback` prevents accidentally treating lexical fallback output as a semantic retrieval baseline.
 
 ## Files
 
@@ -189,6 +246,8 @@ agent/server.py              Flask backend — retrieval, reranking, agentic loo
 scripts/fetch_pubmed.py      PubMed data collection
 scripts/upload.py            Meilisearch upload (Python)
 scripts/upload.mjs           Meilisearch upload (Node)
+scripts/vectorize_and_upload.py
+                             Precompute document vectors and upload Meili _vectors
 scripts/run_benchmark.py     Benchmark harness
 benchmark.md                 Evaluation question set and scoring rubric
 agent-review.md              Architecture review: what works, gaps, and planned fixes
@@ -205,6 +264,6 @@ sample-data/                 Yale SOM course data (original class starter, unuse
 See `agent-review.md` for a full list. Highest-priority open items:
 
 - Reranking weight validation — the composite score coefficients are hand-tuned; a sweep against benchmark citation recall could improve ordering
-- Meilisearch hybrid search — the first-stage fetch is BM25-only; semantic matches that lack keyword overlap are excluded before the reranker sees them
+- Surgical comparison query expansion/corpus coverage — some surgical questions still retrieve broad or adjacent-topic evidence
 - Hardcoded `current_year = 2026` in `recency_boost_for_year` should use `datetime.date.today().year`
 - System prompt additions: search-budget guidance, 0-hit recovery instruction, conflict-handling guidance (guideline vs. recent meta-analysis)
