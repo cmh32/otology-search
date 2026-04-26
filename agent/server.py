@@ -166,7 +166,7 @@ FINAL_CONFIG = types.GenerateContentConfig(system_instruction=FINAL_SYSTEM_INSTR
 MAX_TOOL_TURNS = 5
 FETCH_LIMIT = 60   # candidates pulled from Meilisearch
 RERANK_LIMIT = 12  # returned to the model after semantic re-ranking
-EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "gemini").strip().lower()
+EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "openai").strip().lower()
 EMBEDDING_MODEL = os.environ.get(
     "EMBEDDING_MODEL",
     "text-embedding-3-large" if EMBEDDING_PROVIDER == "openai" else "gemini-embedding-001",
@@ -175,7 +175,7 @@ EMBEDDING_RETRY_DELAY_SECONDS = 2
 EMBEDDING_CACHE_PATH = os.environ.get("EMBEDDING_CACHE_PATH", "data/runtime/embedding-cache.sqlite")
 DISABLE_EMBEDDING_CACHE = os.environ.get("DISABLE_EMBEDDING_CACHE", "").lower() in {"1", "true", "yes"}
 MIN_FILTERED_HITS = 3
-MEILI_HYBRID_SEARCH = os.environ.get("MEILI_HYBRID_SEARCH", "").lower() in {"1", "true", "yes"}
+MEILI_HYBRID_SEARCH = os.environ.get("MEILI_HYBRID_SEARCH", "1").lower() in {"1", "true", "yes"}
 MEILI_HYBRID_EMBEDDER = os.environ.get("MEILI_HYBRID_EMBEDDER", "otology_openai_large")
 MEILI_HYBRID_PROVIDER = os.environ.get("MEILI_HYBRID_PROVIDER", "openai").strip().lower()
 MEILI_HYBRID_MODEL = os.environ.get("MEILI_HYBRID_MODEL", "text-embedding-3-large")
@@ -1125,4 +1125,10 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     print(f"Otology Research Agent → http://localhost:{port}")
     print(f"Literature search      → http://localhost:{port}/search\n")
+    print(
+        "Retrieval config       → "
+        f"Meili {'hybrid' if MEILI_HYBRID_SEARCH else 'BM25'} "
+        f"({MEILI_HYBRID_EMBEDDER}, semanticRatio={MEILI_HYBRID_SEMANTIC_RATIO}); "
+        f"rerank embeddings={EMBEDDING_PROVIDER}:{EMBEDDING_MODEL}\n"
+    )
     app.run(debug=True, port=port)

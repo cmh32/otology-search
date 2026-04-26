@@ -5,7 +5,7 @@ A clinical literature assistant for an APRN specializing in otology. It answers 
 ## What it does
 
 - Retrieves relevant papers from a Meilisearch index of ~16,500 PubMed otology articles
-- Supports optional Meilisearch native hybrid search using precomputed document vectors
+- Uses Meilisearch native hybrid search by default with precomputed OpenAI document vectors
 - Runs up to five agentic tool-call turns to decompose multi-part questions
 - Returns a synthesized answer with inline citations to PubMed URLs
 - Flags any citation URLs that were not actually retrieved (hallucination guard)
@@ -28,8 +28,8 @@ Query expansion (abbreviations + guideline/evidence     │
 suffix variants, up to 5 variants per call)             │
      │                                                  │
      ▼                                                  │
-Meilisearch fetch (BM25 by default, optional native      │
-hybrid BM25 + vector search; top 60 per variant)        │
+Meilisearch fetch (native hybrid BM25 + vector search    │
+by default; top 60 per variant)                         │
      │                                                  │
      ▼                                                  │
 RRF merge (weighted by variant index, keyed by PMID)    │
@@ -64,7 +64,7 @@ Guideline-intent queries (containing "current", "guideline", "indications", etc.
 
 ### Meilisearch hybrid search
 
-The hosted index has user-provided OpenAI `text-embedding-3-large` vectors for all 16,496 documents under the Meilisearch embedder name `otology_openai_large`. Enable native hybrid first-stage fetch with:
+The hosted index has user-provided OpenAI `text-embedding-3-large` vectors for all 16,496 documents under the Meilisearch embedder name `otology_openai_large`. Native hybrid first-stage fetch is enabled by default:
 
 ```bash
 MEILI_HYBRID_SEARCH=1
@@ -113,11 +113,11 @@ MEILI_WRITE_KEY=your_write_key        # only needed for data upload
 Optional:
 
 ```bash
-EMBEDDING_PROVIDER=gemini             # or "openai"
-EMBEDDING_MODEL=gemini-embedding-001  # overrides the default per provider
+EMBEDDING_PROVIDER=openai             # default; set to "gemini" to use Gemini embeddings
+EMBEDDING_MODEL=text-embedding-3-large # overrides the default per provider
 EMBEDDING_CACHE_PATH=data/runtime/embedding-cache.sqlite
 DISABLE_EMBEDDING_CACHE=1             # bypass the SQLite cache
-MEILI_HYBRID_SEARCH=1                 # opt in to native Meilisearch hybrid search
+MEILI_HYBRID_SEARCH=1                 # default; set to 0 to force BM25 first-stage fetch
 MEILI_HYBRID_EMBEDDER=otology_openai_large
 MEILI_HYBRID_PROVIDER=openai
 MEILI_HYBRID_MODEL=text-embedding-3-large
@@ -158,10 +158,12 @@ This script uses the already-fetched JSON corpus; it does not re-scrape PubMed. 
 ### Run the server
 
 ```bash
+set -a && source .env && set +a
 python3 agent/server.py
 ```
 
 Opens at [http://localhost:8080](http://localhost:8080) (chat UI) and [http://localhost:8080/search](http://localhost:8080/search) (Meilisearch browse UI).
+Startup logs print the active retrieval mode; the validated default is Meilisearch hybrid plus OpenAI `text-embedding-3-large` rerank embeddings.
 
 ## API
 

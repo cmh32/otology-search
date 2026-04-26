@@ -11,6 +11,8 @@ set -a && source .env && set +a
 python3 agent/server.py
 ```
 
+This defaults to Meilisearch native hybrid retrieval with embedder `otology_openai_large` and OpenAI `text-embedding-3-large` rerank embeddings. The startup logs should include `Meili hybrid` and `rerank embeddings=openai:text-embedding-3-large`.
+
 Confirm it's up:
 
 ```bash
@@ -33,7 +35,7 @@ set -a && source .env && set +a && <your command>
 
 Key variables: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `MEILI_URL`, `MEILI_INDEX`, `MEILI_SEARCH_KEY`, `MEILI_WRITE_KEY`.
 
-Hybrid retrieval variables:
+Hybrid retrieval variables, now matching the runtime defaults:
 
 ```bash
 MEILI_HYBRID_SEARCH=1
@@ -122,12 +124,12 @@ The hosted index currently has `text-embedding-3-large` vectors for all 16,496 d
 
 ## Architecture in brief
 
-Query → expand to up to 5 variants → Meilisearch fetch (BM25 by default; optional native hybrid BM25 + vector search) → RRF merge → PMID dedup → semantic rerank (configurable embedding provider, asymmetric task types, topic-gated boosts) → top 10 returned to model. Up to 5 agentic tool-call turns per request. See `README.md` for the full composite score formula.
+Query → expand to up to 5 variants → Meilisearch native hybrid fetch by default (BM25 + vector search) → RRF merge → PMID dedup → semantic rerank (configurable embedding provider, asymmetric task types, topic-gated boosts) → top 10 returned to model. Up to 5 agentic tool-call turns per request. See `README.md` for the full composite score formula.
 
 ## Known gotchas
 
 - `current_year = 2026` is hardcoded in `recency_boost_for_year` (`server.py:355`) — should use `datetime.date.today().year`
 - Journal filter is exact-match and case-sensitive — brittle for journal name variants
 - Embedding cache lives at `data/runtime/embedding-cache.sqlite` (gitignored); set `DISABLE_EMBEDDING_CACHE=1` to bypass
-- Native hybrid search is opt-in via `MEILI_HYBRID_SEARCH=1`; the app still applies its own semantic reranker after Meili returns candidates
+- Native hybrid search is enabled by default; set `MEILI_HYBRID_SEARCH=0` to force BM25-only first-stage fetch. The app still applies its own semantic reranker after Meili returns candidates
 - The model is `gemma-4-31b-it` (Gemma 4, not Gemini) — it supports native function-calling via the Google GenAI API

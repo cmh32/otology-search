@@ -359,6 +359,7 @@
 
 <script>
   const API = '/chat';
+  const CHAT_TIMEOUT_MS = 120000;
   const STORAGE_KEY = 'otology-conversations-v1';
 
   marked.setOptions({ breaks: true, gfm: true });
@@ -505,11 +506,15 @@
 
     addThinking();
 
+    let timeoutId;
     try {
+      const controller = new AbortController();
+      timeoutId = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
       const res = await fetch(API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: currentMessages }),
+        signal: controller.signal,
       });
 
       if (!res.ok) {
@@ -532,8 +537,12 @@
       renderSidebar();
     } catch (err) {
       removeThinking();
-      addBubble('ai', `Error: ${err.message}`, false);
+      const message = err.name === 'AbortError'
+        ? 'Request timed out after 120 seconds. Please try again.'
+        : err.message;
+      addBubble('ai', `Error: ${message}`, false);
     } finally {
+      if (timeoutId) clearTimeout(timeoutId);
       sendBtn.disabled = false;
       inputEl.focus();
     }
