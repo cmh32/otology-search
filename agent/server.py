@@ -10,6 +10,7 @@ import sqlite3
 import time
 import urllib.request
 import urllib.error
+import datetime
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -399,7 +400,7 @@ def guideline_source_boost(title: str, abstract: str, journal: str) -> float:
 def recency_boost_for_year(year: int | None, guideline_intent: bool) -> float:
     if not isinstance(year, int):
         return 0.0
-    current_year = 2026
+    current_year = datetime.date.today().year
     window = 20 if guideline_intent else 15
     max_boost = 0.18 if guideline_intent else 0.08
     return max(0.0, 1 - min(current_year - year, window) / window) * max_boost

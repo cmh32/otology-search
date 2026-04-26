@@ -63,6 +63,7 @@ The pipeline is a solid keyword → embedding rerank design, but there are real 
    - **Status:** fixed. `test_tool_calling.py` verified that Gemma emits native `function_call` parts.
 
 2. **Hardcoded year** `current_year = 2026` (`agent/server.py:209`). Use `datetime.date.today().year`.
+   - **Status:** fixed. `recency_boost_for_year` now uses `datetime.date.today().year`.
 
 3. **Forced-final-turn prompt reuse** (`agent/server.py:379-383`). The same system prompt is passed when tools are disabled. It still instructs "Before answering, call the tool", which may confuse the model. Swap in a synthesis-only variant.
    - **Status:** fixed. Final synthesis now uses `FINAL_SYSTEM_INSTRUCTION`, which explicitly tells the model not to call or request tools.
@@ -112,7 +113,7 @@ Strong on intent and structure, weak on operational grounding.
 
 ## Smaller cleanups
 
-- [ ] Replace hardcoded `current_year = 2026` (`agent/server.py:209`) with `datetime.date.today().year`.
+- [x] Replace hardcoded `current_year = 2026` (`agent/server.py:209`) with `datetime.date.today().year`.
 - [ ] Make the journal filter case-insensitive or fuzzy (`agent/server.py:140`).
 - [x] When the tool returns `count: 0`, include a hint about which filters eliminated hits.
 - [ ] Add search-budget guidance to system prompt (model doesn't know it has 5 tool turns).
