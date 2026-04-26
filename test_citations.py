@@ -13,6 +13,7 @@ from agent.server import (  # noqa: E402
     extracted_citations,
     normalize_citation_markdown,
     prepare_citation_response,
+    topic_penalty_for_hit,
 )
 
 
@@ -65,6 +66,38 @@ class CitationTests(unittest.TestCase):
         self.assertEqual(missing_urls, [])
         self.assertEqual(citations, [])
         self.assertEqual(len(format_warnings), 1)
+
+
+class TopicPenaltyTests(unittest.TestCase):
+    def test_penalizes_cochlear_implant_hit_for_ossiculoplasty_query(self):
+        penalty = topic_penalty_for_hit(
+            "What predicts hearing outcomes after ossiculoplasty with PORP or TORP?",
+            "Hearing outcomes after cochlear implantation",
+            "Speech perception improved after cochlear implant surgery.",
+            ["Cochlear Implantation", "Hearing"],
+        )
+
+        self.assertGreater(penalty, 0)
+
+    def test_penalizes_missing_ossiculoplasty_marker_for_ossiculoplasty_query(self):
+        penalty = topic_penalty_for_hit(
+            "What predicts hearing outcomes after ossiculoplasty with PORP or TORP?",
+            "Predictive factors of successful tympanoplasty",
+            "Adults with dry tympanic membrane perforation underwent tympanoplasty.",
+            ["Tympanoplasty", "Hearing"],
+        )
+
+        self.assertGreater(penalty, 0)
+
+    def test_does_not_penalize_ossicular_reconstruction_hit(self):
+        penalty = topic_penalty_for_hit(
+            "What predicts hearing outcomes after ossiculoplasty with PORP or TORP?",
+            "PORP vs. TORP: a meta-analysis",
+            "Ossicular reconstruction with partial and total ossicular replacement prostheses.",
+            ["Ossicular Prosthesis", "Tympanoplasty"],
+        )
+
+        self.assertEqual(penalty, 0.0)
 
 
 if __name__ == "__main__":

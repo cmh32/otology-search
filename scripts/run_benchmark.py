@@ -276,8 +276,8 @@ def write_retrieval_report(path: Path, results: list[dict]) -> None:
             lines.append(f"- Recovery notes: {'; '.join(recovery_notes)}")
         lines.extend([
             "",
-            "| Rank | PMID | Year | Pub Type | Score | Semantic | RRF | Lex | MeSH | Pub | Hier | Src | Rec | Gate | Title |",
-            "|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+            "| Rank | PMID | Year | Pub Type | Score | Semantic | RRF | Lex | MeSH | Pub | Hier | Src | Rec | Gate | Pen | Title |",
+            "|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
         ])
         for rank, paper in enumerate(papers, start=1):
             pub_types = ", ".join((paper.get("publication_type") or [])[:3])
@@ -294,11 +294,12 @@ def write_retrieval_report(path: Path, results: list[dict]) -> None:
             source_text = "" if paper.get("source_boost") is None else str(paper.get("source_boost"))
             recency_text = "" if paper.get("recency_boost") is None else str(paper.get("recency_boost"))
             gate_text = "" if paper.get("topic_boost_factor") is None else str(paper.get("topic_boost_factor"))
+            penalty_text = "" if paper.get("topic_penalty") is None else str(paper.get("topic_penalty"))
             lines.append(
                 f"| {rank} | {paper.get('pmid') or ''} | {paper.get('year') or ''} | "
                 f"{pub_types.replace('|', '\\|')} | {score_text} | {semantic_text} | "
                 f"{rrf_text} | {lexical_text} | {mesh_text} | {pub_text} | "
-                f"{hierarchy_text} | {source_text} | {recency_text} | {gate_text} | {title} |"
+                f"{hierarchy_text} | {source_text} | {recency_text} | {gate_text} | {penalty_text} | {title} |"
             )
         lines.append("")
     path.write_text("\n".join(lines) + "\n")

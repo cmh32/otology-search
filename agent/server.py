@@ -182,6 +182,37 @@ MEILI_HYBRID_MODEL = os.environ.get("MEILI_HYBRID_MODEL", "text-embedding-3-larg
 MEILI_HYBRID_SEMANTIC_RATIO = float(os.environ.get("MEILI_HYBRID_SEMANTIC_RATIO", "0.3"))
 BOOST_TOPIC_GATE_THRESHOLD = float(os.environ.get("BOOST_TOPIC_GATE_THRESHOLD", "0.55"))
 BOOST_TOPIC_GATE_FACTOR = float(os.environ.get("BOOST_TOPIC_GATE_FACTOR", "0.25"))
+OSSICULOPLASTY_QUERY_TERMS = {
+    "ossiculoplasty",
+    "ossicular",
+    "porp",
+    "torp",
+}
+OSSICULOPLASTY_ON_TOPIC_MARKERS = {
+    "ossiculoplasty",
+    "ossicular",
+    "ossicular chain",
+    "ossicular replacement",
+    "ossicular reconstruction",
+    "ossicular prosthesis",
+    "partial ossicular",
+    "total ossicular",
+    "porp",
+    "torp",
+    "malleus",
+    "incus",
+    "stapes",
+}
+OSSICULOPLASTY_OFF_TOPIC_MARKERS = {
+    "cochlear implant",
+    "cochlear implantation",
+    "vestibular schwannoma",
+    "hearing preservation after cochlear",
+    "single-sided deafness",
+    "speech perception",
+}
+OSSICULOPLASTY_OFF_TOPIC_PENALTY = 0.18
+OSSICULOPLASTY_MISSING_TOPIC_PENALTY = 0.12
 
 OUT_OF_SCOPE_TERMS = {
     "rhinosinusitis",
@@ -372,6 +403,19 @@ def recency_boost_for_year(year: int | None, guideline_intent: bool) -> float:
     window = 20 if guideline_intent else 15
     max_boost = 0.18 if guideline_intent else 0.08
     return max(0.0, 1 - min(current_year - year, window) / window) * max_boost
+
+
+def topic_penalty_for_hit(query: str, title: str, abstract: str, mesh_terms: list[str]) -> float:
+    query_terms = set(re.findall(r"[a-z0-9-]+", query.lower()))
+    if not (query_terms & OSSICULOPLASTY_QUERY_TERMS):
+        return 0.0
+
+    haystack = f"{title} {abstract[:1000]} {' '.join(mesh_terms)}".lower()
+    if any(marker in haystack for marker in OSSICULOPLASTY_ON_TOPIC_MARKERS):
+        return 0.0
+    if any(marker in haystack for marker in OSSICULOPLASTY_OFF_TOPIC_MARKERS):
+        return OSSICULOPLASTY_OFF_TOPIC_PENALTY
+    return OSSICULOPLASTY_MISSING_TOPIC_PENALTY
 
 
 def fetch_papers(
@@ -661,6 +705,7 @@ def semantic_rerank(query: str, hits: list) -> list:
             mesh_component = 0.02 * mesh_overlap
             publication_type_component = 0.04 * publication_type_overlap
             rrf_component = 2.0 * hit.get("_rrf_score", 0.0)
+            topic_penalty = topic_penalty_for_hit(query, raw_title, raw_abstract, mesh_terms)
             score = (
                 semantic_score
                 + lexical_component
@@ -670,6 +715,7 @@ def semantic_rerank(query: str, hits: list) -> list:
                 + hierarchy_boost
                 + source_boost
                 + recency_boost
+                - topic_penalty
             )
             enriched = dict(hit)
             enriched["_score"] = round(score, 4)
@@ -688,6 +734,7 @@ def semantic_rerank(query: str, hits: list) -> list:
             enriched["_mesh_component"] = round(mesh_component, 4)
             enriched["_publication_type_component"] = round(publication_type_component, 4)
             enriched["_rrf_component"] = round(rrf_component, 4)
+            enriched["_topic_penalty"] = round(topic_penalty, 4)
             scored.append(enriched)
 
         scored.sort(key=lambda hit: hit["_score"], reverse=True)
@@ -724,6 +771,7 @@ def lexical_policy_rerank(query: str, hits: list) -> list:
         mesh_component = 0.02 * mesh_overlap
         publication_type_component = 0.04 * publication_type_overlap
         rrf_component = 2.0 * hit.get("_rrf_score", 0.0)
+        topic_penalty = topic_penalty_for_hit(query, raw_title, raw_abstract, mesh_terms)
         score = (
             (1.0 / (60 + rank))
             + lexical_component
@@ -733,6 +781,7 @@ def lexical_policy_rerank(query: str, hits: list) -> list:
             + hierarchy_boost
             + source_boost
             + recency_boost
+            - topic_penalty
         )
         enriched = dict(hit)
         enriched["_score"] = round(score, 4)
@@ -751,6 +800,7 @@ def lexical_policy_rerank(query: str, hits: list) -> list:
         enriched["_mesh_component"] = round(mesh_component, 4)
         enriched["_publication_type_component"] = round(publication_type_component, 4)
         enriched["_rrf_component"] = round(rrf_component, 4)
+        enriched["_topic_penalty"] = round(topic_penalty, 4)
         scored.append(enriched)
 
     scored.sort(key=lambda hit: hit["_score"], reverse=True)
@@ -863,6 +913,7 @@ def search_and_rerank(
             "recency_boost": h.get("_recency_boost"),
             "raw_recency_boost": h.get("_raw_recency_boost"),
             "topic_boost_factor": h.get("_topic_boost_factor"),
+            "topic_penalty": h.get("_topic_penalty"),
         })
 
     return {
@@ -1077,6 +1128,7 @@ def chat():
                             "publication_type": paper.get("publication_type", []),
                             "score": paper.get("score"),
                             "semantic_score": paper.get("semantic_score"),
+                            "topic_penalty": paper.get("topic_penalty"),
                             "url": paper.get("url"),
                         }
                         for paper in result.get("papers", [])
