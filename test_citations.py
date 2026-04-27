@@ -3,6 +3,7 @@
 
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("MEILI_URL", "http://localhost:7700")
 os.environ.setdefault("MEILI_INDEX", "test")
@@ -10,6 +11,7 @@ os.environ.setdefault("MEILI_SEARCH_KEY", "test")
 os.environ.setdefault("GEMINI_API_KEY", "test")
 
 from agent.server import (  # noqa: E402
+    enforce_citation_urls,
     extracted_citations,
     journal_matches,
     journal_match_score,
@@ -68,6 +70,60 @@ class CitationTests(unittest.TestCase):
         self.assertEqual(missing_urls, [])
         self.assertEqual(citations, [])
         self.assertEqual(len(format_warnings), 1)
+
+    def test_enforce_citation_urls_repairs_title_only_citation(self):
+        retrieved = {"https://pubmed.ncbi.nlm.nih.gov/35872300/"}
+        sources = {
+            "https://pubmed.ncbi.nlm.nih.gov/35872300/": {
+                "title": "Ototoxicity in childhood",
+                "year": 2022,
+            }
+        }
+        reply = "Evidence supports monitoring [Ototoxicity in childhood (2022)]."
+        repaired = (
+            "Evidence supports monitoring "
+            "[Ototoxicity in childhood (2022)](https://pubmed.ncbi.nlm.nih.gov/35872300/)."
+        )
+
+        with patch("agent.server.repair_citation_markdown", return_value=repaired):
+            checked_reply, missing_urls, citations, format_warnings, repair_attempted = enforce_citation_urls(
+                reply,
+                retrieved,
+                sources,
+            )
+
+        self.assertTrue(repair_attempted)
+        self.assertEqual(missing_urls, [])
+        self.assertEqual(format_warnings, [])
+        self.assertEqual(citations, [{
+            "label": "Ototoxicity in childhood (2022)",
+            "url": "https://pubmed.ncbi.nlm.nih.gov/35872300/",
+        }])
+        self.assertIn("https://pubmed.ncbi.nlm.nih.gov/35872300/", checked_reply)
+
+    def test_enforce_citation_urls_keeps_answer_if_repair_fails(self):
+        retrieved = {"https://pubmed.ncbi.nlm.nih.gov/35872300/"}
+        sources = {
+            "https://pubmed.ncbi.nlm.nih.gov/35872300/": {
+                "title": "Ototoxicity in childhood",
+                "year": 2022,
+            }
+        }
+        reply = "Evidence supports monitoring [Ototoxicity in childhood (2022)]."
+
+        with patch("agent.server.repair_citation_markdown", side_effect=RuntimeError("upstream 500")):
+            checked_reply, missing_urls, citations, format_warnings, repair_attempted = enforce_citation_urls(
+                reply,
+                retrieved,
+                sources,
+            )
+
+        self.assertTrue(repair_attempted)
+        self.assertEqual(checked_reply, reply)
+        self.assertEqual(missing_urls, [])
+        self.assertEqual(citations, [])
+        self.assertEqual(len(format_warnings), 2)
+        self.assertIn("Citation URL repair failed", format_warnings[1])
 
 
 class TopicPenaltyTests(unittest.TestCase):

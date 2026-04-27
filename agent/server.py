@@ -111,6 +111,15 @@ If the user asks for current indications or guideline-based management, organize
 Keep the answer under 300 words unless the user asks for more depth.
 Do not use tables unless the user explicitly asks."""
 
+CITATION_REPAIR_SYSTEM_INSTRUCTION = """You repair citation Markdown in otology literature answers.
+Return only the revised answer text.
+Do not change clinical wording except to repair citation markup.
+Every source citation must be a complete Markdown link: [Title (Year)](https://pubmed.ncbi.nlm.nih.gov/PMID/).
+Use only URLs from the provided retrieved source list.
+If a bracketed source title in the answer matches a retrieved source, convert it to a Markdown link with that source's PubMed URL.
+If a claim clearly cites a retrieved source by title without a URL, add the PubMed URL.
+Never invent a title, year, PMID, or URL."""
+
 SEARCH_TOOL = types.Tool(function_declarations=[
     types.FunctionDeclaration(
         name="search_papers",
@@ -167,6 +176,7 @@ AGENT_CONFIG = types.GenerateContentConfig(
     tools=[SEARCH_TOOL],
 )
 FINAL_CONFIG = types.GenerateContentConfig(system_instruction=FINAL_SYSTEM_INSTRUCTION)
+CITATION_REPAIR_CONFIG = types.GenerateContentConfig(system_instruction=CITATION_REPAIR_SYSTEM_INSTRUCTION)
 
 MAX_TOOL_TURNS = 5
 FETCH_LIMIT = 60   # candidates pulled from Meilisearch
@@ -235,6 +245,7 @@ OUT_OF_SCOPE_TERMS = {
 URL_PATTERN = re.compile(r"https://pubmed\.ncbi\.nlm\.nih\.gov/\d+/?")
 CITATION_PATTERN = re.compile(r"\[([^\]]+)\]\((https://pubmed\.ncbi\.nlm\.nih\.gov/\d+/?)\)")
 DOUBLE_BRACKET_CITATION_PATTERN = re.compile(r"\[\[([^\]]+)\]\((https://pubmed\.ncbi\.nlm\.nih\.gov/\d+/?)\)")
+CITATION_LIKE_BRACKET_PATTERN = re.compile(r"\[[^\]\n]{12,}\]")
 
 QUERY_EXPANSIONS = {
     "ssnhl": "sudden sensorineural hearing loss",
@@ -1068,6 +1079,38 @@ def extracted_citations(reply: str) -> list[dict]:
     return result
 
 
+def has_citation_like_brackets(reply: str) -> bool:
+    """Detect title-style bracket citations that are missing Markdown URLs."""
+    without_valid_links = CITATION_PATTERN.sub("", reply or "")
+    return bool(CITATION_LIKE_BRACKET_PATTERN.search(without_valid_links))
+
+
+def repair_citation_markdown(reply: str, retrieved_sources: dict[str, dict]) -> str:
+    sources = [
+        {
+            "title": source.get("title", ""),
+            "year": source.get("year"),
+            "url": url,
+        }
+        for url, source in sorted(retrieved_sources.items())
+    ]
+    if not sources:
+        return reply
+
+    prompt = (
+        "Retrieved source list:\n"
+        f"{json.dumps(sources, indent=2)}\n\n"
+        "Answer to repair:\n"
+        f"{reply or ''}"
+    )
+    response = client.models.generate_content(
+        model="gemma-4-31b-it",
+        contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+        config=CITATION_REPAIR_CONFIG,
+    )
+    return response.text or reply
+
+
 def prepare_citation_response(reply: str, retrieved_urls: set[str]) -> tuple[str, list[str], list[dict], list[str]]:
     normalized_reply = normalize_citation_markdown(reply)
     checked_reply, missing_urls = filter_unretrieved_citations(normalized_reply, retrieved_urls)
@@ -1078,6 +1121,32 @@ def prepare_citation_response(reply: str, retrieved_urls: set[str]) -> tuple[str
             "No valid PubMed citation links were parsed even though the literature search returned papers."
         )
     return checked_reply, missing_urls, citations, format_warnings
+
+
+def enforce_citation_urls(
+    reply: str,
+    retrieved_urls: set[str],
+    retrieved_sources: dict[str, dict],
+) -> tuple[str, list[str], list[dict], list[str], bool]:
+    checked_reply, missing_urls, citations, format_warnings = prepare_citation_response(
+        reply,
+        retrieved_urls,
+    )
+    repair_attempted = False
+    if format_warnings and has_citation_like_brackets(checked_reply):
+        repair_attempted = True
+        try:
+            repaired_reply = repair_citation_markdown(checked_reply, retrieved_sources)
+        except Exception as e:
+            format_warnings.append(f"Citation URL repair failed: {str(e)[:120]}")
+            return checked_reply, missing_urls, citations, format_warnings, repair_attempted
+        checked_reply, missing_urls, citations, format_warnings = prepare_citation_response(
+            repaired_reply,
+            retrieved_urls,
+        )
+        if format_warnings:
+            format_warnings.append("Citation URL repair was attempted but did not produce valid PubMed links.")
+    return checked_reply, missing_urls, citations, format_warnings, repair_attempted
 
 
 @app.after_request
@@ -1133,12 +1202,14 @@ def chat():
     try:
         seen_pmids = set()
         retrieved_urls = set()
+        retrieved_sources = {}
         skip_rerank_for_request = False
         trace = {
             "out_of_scope": False,
             "tool_calls": [],
             "forced_final": False,
             "rerank_disabled": False,
+            "citation_repair_attempted": False,
         }
 
         # Agentic tool-calling loop
@@ -1154,7 +1225,12 @@ def chat():
 
             # No tool calls → model is done, return the text answer
             if not function_calls:
-                reply, missing_urls, citations, format_warnings = prepare_citation_response(response.text, retrieved_urls)
+                reply, missing_urls, citations, format_warnings, repair_attempted = enforce_citation_urls(
+                    response.text,
+                    retrieved_urls,
+                    retrieved_sources,
+                )
+                trace["citation_repair_attempted"] = repair_attempted
                 response_obj = {
                     "reply": reply,
                     "citation_warnings": missing_urls,
@@ -1218,7 +1294,12 @@ def chat():
                 for paper in result.get("papers", []):
                     url = paper.get("url")
                     if url:
-                        retrieved_urls.add(url.rstrip("/") + "/")
+                        normalized_url = url.rstrip("/") + "/"
+                        retrieved_urls.add(normalized_url)
+                        retrieved_sources[normalized_url] = {
+                            "title": paper.get("title", ""),
+                            "year": paper.get("year"),
+                        }
                 trace["tool_calls"].append({
                     "turn": turn + 1,
                     "query": query,
@@ -1256,8 +1337,13 @@ def chat():
             contents=contents,
             config=FINAL_CONFIG,
         )
-        reply, missing_urls, citations, format_warnings = prepare_citation_response(response.text, retrieved_urls)
+        reply, missing_urls, citations, format_warnings, repair_attempted = enforce_citation_urls(
+            response.text,
+            retrieved_urls,
+            retrieved_sources,
+        )
         trace["forced_final"] = True
+        trace["citation_repair_attempted"] = repair_attempted
         response_obj = {
             "reply": reply,
             "citation_warnings": missing_urls,
