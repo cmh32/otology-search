@@ -72,7 +72,8 @@ def run_question(client, question: dict) -> dict:
             "/chat",
             json={
                 "trace": True,
-                "messages": [{"role": "user", "content": question["question"]}],
+                "user_id": "benchmark-run",
+                "message": question["question"],
             },
         )
     elapsed = time.time() - started
@@ -356,6 +357,8 @@ def main() -> None:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = ROOT / args.output_dir / timestamp
     run_dir.mkdir(parents=True, exist_ok=True)
+    benchmark_conversation_db_path = run_dir / "conversations.sqlite"
+    server.CONVERSATION_DB_PATH = str(benchmark_conversation_db_path)
 
     metadata = {
         "date": datetime.now().isoformat(timespec="seconds"),
@@ -364,6 +367,7 @@ def main() -> None:
         "question_selection": args.questions,
         "embedding_provider": server.EMBEDDING_PROVIDER,
         "embedding_model": server.EMBEDDING_MODEL,
+        "conversation_db_path": str(benchmark_conversation_db_path),
         "retrieval_only": args.retrieval_only,
     }
 

@@ -70,7 +70,7 @@ EMBEDDING_MODEL=text-embedding-3-large
 ```bash
 set -a && source .env && set +a && curl -s -X POST http://localhost:8080/chat \
   -H 'Content-Type: application/json' \
-  -d '{"messages":[{"role":"user","content":"YOUR QUESTION HERE"}],"trace":true}' \
+  -d '{"user_id":"manual-test-user","message":"YOUR QUESTION HERE","trace":true}' \
   | python3 -c "
 import json, sys
 d = json.load(sys.stdin)

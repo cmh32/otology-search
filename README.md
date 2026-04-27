@@ -184,9 +184,9 @@ Then open [http://127.0.0.1:8080/](http://127.0.0.1:8080/). This fallback disabl
 
 ```json
 {
-  "messages": [
-    {"role": "user", "content": "What are current indications for tympanostomy tubes?"}
-  ],
+  "user_id": "anonymous-browser-uuid",
+  "conversation_id": "optional-existing-conversation-uuid",
+  "message": "What are current indications for tympanostomy tubes?",
   "trace": true
 }
 ```
@@ -195,6 +195,7 @@ Response:
 
 ```json
 {
+  "conversation_id": "...",
   "reply": "...",
   "citations": [{"label": "Title (Year)", "url": "https://pubmed.ncbi.nlm.nih.gov/..."}],
   "citation_warnings": [],
@@ -212,6 +213,8 @@ Response:
 `citation_warnings` lists any PubMed URLs in the answer that were not returned by tool calls. `citation_format_warnings` lists citation-format problems such as an answer with retrieved papers but no valid PubMed citation links. If retrieved papers exist but no valid citation links are parsed, the app attempts one citation repair using only retrieved source URLs; `trace.citation_repair_attempted` reports whether that happened. `trace` is only included when `"trace": true` is sent in the request.
 
 The `search_papers` tool accepts: `query` (required), `mesh_terms`, `publication_types`, `year_from`, `year_to`, `journal`, `max_results` (default 10, max 12).
+
+Conversation history is stored server-side in SQLite at `data/runtime/conversations.sqlite` by default. The browser-generated `user_id` is a bearer credential for local/demo use; do not expose this app publicly without real authentication. The model receives the latest 30 user-visible messages from the active conversation; older messages remain visible in the UI but are not included in model context.
 
 Journal constraints are fuzzy identity filters, not broad specialty-family filters. The tool expands common abbreviations and tolerates long official journal names, so `Otol Neurotol` can match `Otology & Neurotology : official publication...`. Distinctive journal identity tokens still have to match: `JAMA Otolaryngol Head Neck Surg` should not match `Archives of Otolaryngology--Head & Neck Surgery` just because both share `otolaryngology`, `head`, `neck`, and `surgery`. If a journal constraint is too narrow, the low-hit recovery path retries without it and reports that in `recovery_notes`.
 

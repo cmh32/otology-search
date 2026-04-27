@@ -2,6 +2,8 @@
 """Regression tests for final-answer citation validation."""
 
 import os
+import contextlib
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -10,15 +12,25 @@ os.environ.setdefault("MEILI_INDEX", "test")
 os.environ.setdefault("MEILI_SEARCH_KEY", "test")
 os.environ.setdefault("GEMINI_API_KEY", "test")
 
+from agent import server  # noqa: E402
 from agent.server import (  # noqa: E402
+    append_conversation_message,
+    create_conversation,
+    delete_conversation_for_user,
     enforce_citation_urls,
     extracted_citations,
     generate_content_with_retry,
+    get_conversation,
+    get_conversation_db,
     journal_matches,
     journal_match_score,
+    list_conversations_for_user,
+    load_messages_for_conversation,
+    normalize_conversation_title,
     normalize_citation_markdown,
     prepare_citation_response,
     topic_penalty_for_hit,
+    upsert_user,
 )
 
 
@@ -242,6 +254,139 @@ class JournalFilterTests(unittest.TestCase):
                 "Archives of otolaryngology--head & neck surgery",
             )
         )
+
+
+class ConversationStoreTests(unittest.TestCase):
+    def test_title_truncation_marks_omitted_text(self):
+        title = normalize_conversation_title("x" * 80)
+
+        self.assertEqual(len(title), 60)
+        self.assertTrue(title.endswith("…"))
+
+    def test_create_list_load_and_delete_conversation(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "agent.server.CONVERSATION_DB_PATH",
+            os.path.join(tmpdir, "conversations.sqlite"),
+        ):
+            with contextlib.closing(get_conversation_db()) as db:
+                upsert_user(db, "user-a")
+                conversation_id = create_conversation(db, "user-a", "  First   clinical question  ")
+                append_conversation_message(db, conversation_id, "user", "First clinical question")
+                append_conversation_message(db, conversation_id, "assistant", "Answer")
+                db.commit()
+
+                conversations = list_conversations_for_user(db, "user-a")
+                messages = load_messages_for_conversation(db, conversation_id)
+                deleted = delete_conversation_for_user(db, "user-a", conversation_id)
+                remaining_messages = load_messages_for_conversation(db, conversation_id)
+
+            self.assertEqual(len(conversations), 1)
+            self.assertEqual(conversations[0]["title"], "First clinical question")
+            self.assertEqual([m["role"] for m in messages], ["user", "assistant"])
+            self.assertTrue(deleted)
+            self.assertEqual(remaining_messages, [])
+
+    def test_ownership_checks_do_not_return_other_users_conversations(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "agent.server.CONVERSATION_DB_PATH",
+            os.path.join(tmpdir, "conversations.sqlite"),
+        ):
+            with contextlib.closing(get_conversation_db()) as db:
+                upsert_user(db, "user-a")
+                upsert_user(db, "user-b")
+                conversation_id = create_conversation(db, "user-a", "Question")
+                db.commit()
+
+                self.assertIsNone(get_conversation(db, "user-b", conversation_id))
+                self.assertFalse(delete_conversation_for_user(db, "user-b", conversation_id))
+                self.assertIsNotNone(get_conversation(db, "user-a", conversation_id))
+
+
+class ConversationApiTests(unittest.TestCase):
+    def test_chat_creates_conversation_and_persists_visible_messages(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "agent.server.CONVERSATION_DB_PATH",
+            os.path.join(tmpdir, "conversations.sqlite"),
+        ), patch("agent.server.run_agent", return_value={"reply": "Stored answer", "citations": []}):
+            with server.app.test_client() as client:
+                response = client.post(
+                    "/chat",
+                    json={"user_id": "user-a", "message": "What about tympanostomy tubes?"},
+                )
+                payload = response.get_json()
+
+                self.assertEqual(response.status_code, 200)
+                conversation_id = payload["conversation_id"]
+
+                loaded = client.get(f"/api/conversations/{conversation_id}?user_id=user-a")
+                loaded_payload = loaded.get_json()
+
+            self.assertEqual(loaded.status_code, 200)
+            self.assertEqual(
+                [m["role"] for m in loaded_payload["messages"]],
+                ["user", "assistant"],
+            )
+            self.assertEqual(loaded_payload["messages"][1]["content"], "Stored answer")
+
+    def test_wrong_user_get_delete_and_chat_return_404(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "agent.server.CONVERSATION_DB_PATH",
+            os.path.join(tmpdir, "conversations.sqlite"),
+        ), patch("agent.server.run_agent", return_value={"reply": "Answer", "citations": []}):
+            with server.app.test_client() as client:
+                created = client.post(
+                    "/chat",
+                    json={"user_id": "user-a", "message": "Question"},
+                ).get_json()
+                conversation_id = created["conversation_id"]
+
+                get_response = client.get(f"/api/conversations/{conversation_id}?user_id=user-b")
+                delete_response = client.delete(f"/api/conversations/{conversation_id}?user_id=user-b")
+                chat_response = client.post(
+                    "/chat",
+                    json={
+                        "user_id": "user-b",
+                        "conversation_id": conversation_id,
+                        "message": "Follow up",
+                    },
+                )
+
+            self.assertEqual(get_response.status_code, 404)
+            self.assertEqual(delete_response.status_code, 404)
+            self.assertEqual(chat_response.status_code, 404)
+
+    def test_chat_context_uses_latest_30_visible_messages(self):
+        captured = {}
+
+        def fake_run_agent(contents, include_trace=False):
+            captured["texts"] = [part.text for content in contents for part in content.parts if part.text]
+            return {"reply": "Answer", "citations": []}
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "agent.server.CONVERSATION_DB_PATH",
+            os.path.join(tmpdir, "conversations.sqlite"),
+        ), patch("agent.server.run_agent", side_effect=fake_run_agent):
+            with contextlib.closing(get_conversation_db()) as db:
+                upsert_user(db, "user-a")
+                conversation_id = create_conversation(db, "user-a", "Question 0")
+                for i in range(35):
+                    append_conversation_message(db, conversation_id, "user", f"prior {i}")
+                db.commit()
+
+            with server.app.test_client() as client:
+                response = client.post(
+                    "/chat",
+                    json={
+                        "user_id": "user-a",
+                        "conversation_id": conversation_id,
+                        "message": "newest",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(captured["texts"]), 30)
+        self.assertEqual(captured["texts"][0], "prior 6")
+        self.assertEqual(captured["texts"][-1], "newest")
 
 
 if __name__ == "__main__":

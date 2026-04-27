@@ -2,6 +2,7 @@
 """Flask backend for the Otology Literature Research Agent."""
 
 import json
+import contextlib
 import math
 import os
 import random
@@ -12,6 +13,7 @@ import time
 import urllib.request
 import urllib.error
 import datetime
+import uuid
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -191,6 +193,8 @@ EMBEDDING_RETRY_DELAY_SECONDS = 2
 MODEL_RETRY_ATTEMPTS = int(os.environ.get("MODEL_RETRY_ATTEMPTS", "3"))
 MODEL_RETRY_BASE_DELAY_SECONDS = float(os.environ.get("MODEL_RETRY_BASE_DELAY_SECONDS", "1"))
 EMBEDDING_CACHE_PATH = os.environ.get("EMBEDDING_CACHE_PATH", "data/runtime/embedding-cache.sqlite")
+CONVERSATION_DB_PATH = os.environ.get("CONVERSATION_DB_PATH", "data/runtime/conversations.sqlite")
+CONVERSATION_CONTEXT_MESSAGE_LIMIT = int(os.environ.get("CONVERSATION_CONTEXT_MESSAGE_LIMIT", "30"))
 DISABLE_EMBEDDING_CACHE = os.environ.get("DISABLE_EMBEDDING_CACHE", "").lower() in {"1", "true", "yes"}
 MIN_FILTERED_HITS = 3
 MEILI_HYBRID_SEARCH = os.environ.get("MEILI_HYBRID_SEARCH", "1").lower() in {"1", "true", "yes"}
@@ -720,9 +724,15 @@ class EmbeddingCache:
                 )
                 """
             )
+            conn.commit()
 
+    @contextlib.contextmanager
     def _connect(self):
-        return sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path)
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _content_hash(self, text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -1120,6 +1130,341 @@ def generate_content_with_retry(*, phase: str, model: str, contents, config):
             time.sleep(delay)
 
 
+def utc_now_iso() -> str:
+    return datetime.datetime.now(datetime.UTC).isoformat(timespec="microseconds")
+
+
+def normalize_conversation_title(text: str) -> str:
+    title = re.sub(r"\s+", " ", (text or "").strip())
+    if not title:
+        return "Untitled"
+    if len(title) > 60:
+        return title[:59] + "…"
+    return title
+
+
+def validate_user_id(user_id: str) -> str:
+    user_id = (user_id or "").strip()
+    if not user_id:
+        raise ValueError("user_id is required")
+    if len(user_id) > 128:
+        raise ValueError("user_id is too long")
+    return user_id
+
+
+def conversation_db_path() -> Path:
+    return Path(CONVERSATION_DB_PATH)
+
+
+def get_conversation_db() -> sqlite3.Connection:
+    path = conversation_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(path)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys = ON")
+    init_conversation_db(db)
+    return db
+
+
+def init_conversation_db(db: sqlite3.Connection) -> None:
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS conversations (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS messages (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_conversations_user_updated
+            ON conversations(user_id, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
+            ON messages(conversation_id, created_at);
+    """)
+
+
+def upsert_user(db: sqlite3.Connection, user_id: str) -> None:
+    now = utc_now_iso()
+    db.execute(
+        """
+        INSERT INTO users (id, created_at, last_seen_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET last_seen_at = excluded.last_seen_at
+        """,
+        (user_id, now, now),
+    )
+
+
+def create_conversation(db: sqlite3.Connection, user_id: str, first_message: str) -> str:
+    conversation_id = str(uuid.uuid4())
+    now = utc_now_iso()
+    db.execute(
+        """
+        INSERT INTO conversations (id, user_id, title, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (conversation_id, user_id, normalize_conversation_title(first_message), now, now),
+    )
+    return conversation_id
+
+
+def get_conversation(db: sqlite3.Connection, user_id: str, conversation_id: str):
+    return db.execute(
+        """
+        SELECT id, user_id, title, created_at, updated_at
+        FROM conversations
+        WHERE id = ? AND user_id = ?
+        """,
+        (conversation_id, user_id),
+    ).fetchone()
+
+
+def list_conversations_for_user(db: sqlite3.Connection, user_id: str) -> list[dict]:
+    rows = db.execute(
+        """
+        SELECT id, title, created_at, updated_at
+        FROM conversations
+        WHERE user_id = ?
+        ORDER BY updated_at DESC
+        """,
+        (user_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def load_messages_for_conversation(db: sqlite3.Connection, conversation_id: str) -> list[dict]:
+    rows = db.execute(
+        """
+        SELECT role, content, created_at
+        FROM messages
+        WHERE conversation_id = ?
+        ORDER BY created_at, rowid
+        """,
+        (conversation_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def load_context_messages(db: sqlite3.Connection, conversation_id: str) -> list[dict]:
+    rows = db.execute(
+        """
+        SELECT role, content, created_at
+        FROM messages
+        WHERE conversation_id = ?
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ?
+        """,
+        (conversation_id, CONVERSATION_CONTEXT_MESSAGE_LIMIT),
+    ).fetchall()
+    return [dict(row) for row in reversed(rows)]
+
+
+def append_conversation_message(
+    db: sqlite3.Connection,
+    conversation_id: str,
+    role: str,
+    content: str,
+) -> None:
+    if role not in {"user", "assistant"}:
+        raise ValueError("role must be user or assistant")
+    now = utc_now_iso()
+    db.execute(
+        """
+        INSERT INTO messages (id, conversation_id, role, content, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (str(uuid.uuid4()), conversation_id, role, content, now),
+    )
+    db.execute(
+        "UPDATE conversations SET updated_at = ? WHERE id = ?",
+        (now, conversation_id),
+    )
+
+
+def delete_conversation_for_user(db: sqlite3.Connection, user_id: str, conversation_id: str) -> bool:
+    result = db.execute(
+        "DELETE FROM conversations WHERE id = ? AND user_id = ?",
+        (conversation_id, user_id),
+    )
+    return result.rowcount > 0
+
+
+def build_model_contents(messages: list[dict]) -> list:
+    contents = []
+    for msg in messages:
+        role = "user" if msg["role"] == "user" else "model"
+        contents.append(types.Content(role=role, parts=[types.Part(text=msg["content"])]))
+    return contents
+
+
+def run_agent(contents: list, include_trace: bool = False) -> dict:
+    seen_pmids = set()
+    retrieved_urls = set()
+    retrieved_sources = {}
+    skip_rerank_for_request = False
+    trace = {
+        "out_of_scope": False,
+        "tool_calls": [],
+        "forced_final": False,
+        "rerank_disabled": False,
+        "citation_repair_attempted": False,
+    }
+
+    for turn in range(MAX_TOOL_TURNS):
+        response = generate_content_with_retry(
+            phase=f"agent_turn_{turn + 1}",
+            model="gemma-4-31b-it",
+            contents=contents,
+            config=AGENT_CONFIG,
+        )
+
+        candidate = response.candidates[0]
+        function_calls = [p for p in candidate.content.parts if p.function_call]
+
+        if not function_calls:
+            reply, missing_urls, citations, format_warnings, repair_attempted = enforce_citation_urls(
+                response.text,
+                retrieved_urls,
+                retrieved_sources,
+            )
+            trace["citation_repair_attempted"] = repair_attempted
+            response_obj = {
+                "reply": reply,
+                "citation_warnings": missing_urls,
+                "citation_format_warnings": format_warnings,
+                "citations": citations,
+            }
+            if include_trace:
+                response_obj["trace"] = trace
+            return response_obj
+
+        print(f"  [agent turn {turn + 1}] {len(function_calls)} search(es)")
+        contents.append(types.Content(role="model", parts=function_calls))
+
+        tool_parts = []
+        for part in function_calls:
+            fc = part.function_call
+            query = fc.args.get("query", "")
+            mesh_terms = fc.args.get("mesh_terms") or []
+            publication_types = fc.args.get("publication_types") or []
+            year_from = fc.args.get("year_from")
+            year_to = fc.args.get("year_to")
+            journal = fc.args.get("journal")
+            max_results = fc.args.get("max_results")
+            print(
+                f"    → query={query!r} mesh_terms={mesh_terms!r} "
+                f"publication_types={publication_types!r} "
+                f"year_from={year_from!r} year_to={year_to!r} journal={journal!r}"
+            )
+            try:
+                result = search_and_rerank(
+                    query=query,
+                    mesh_terms=mesh_terms,
+                    publication_types=publication_types,
+                    year_from=year_from,
+                    year_to=year_to,
+                    journal=journal,
+                    max_results=max_results,
+                    seen_pmids=seen_pmids,
+                    skip_rerank=skip_rerank_for_request,
+                )
+            except Exception as e:
+                if "429" not in str(e):
+                    raise
+                print("  [rerank disabled] embedding quota hit; using keyword order for this request")
+                skip_rerank_for_request = True
+                trace["rerank_disabled"] = True
+                result = search_and_rerank(
+                    query=query,
+                    mesh_terms=mesh_terms,
+                    publication_types=publication_types,
+                    year_from=year_from,
+                    year_to=year_to,
+                    journal=journal,
+                    max_results=max_results,
+                    seen_pmids=seen_pmids,
+                    skip_rerank=True,
+                )
+            for paper in result.get("papers", []):
+                url = paper.get("url")
+                if url:
+                    normalized_url = url.rstrip("/") + "/"
+                    retrieved_urls.add(normalized_url)
+                    retrieved_sources[normalized_url] = {
+                        "title": paper.get("title", ""),
+                        "year": paper.get("year"),
+                    }
+            trace["tool_calls"].append({
+                "turn": turn + 1,
+                "query": query,
+                "filters": result.get("filters", {}),
+                "query_variants": result.get("query_variants", []),
+                "recovery_notes": result.get("recovery_notes", []),
+                "count": result.get("count", 0),
+                "papers": [
+                    {
+                        "pmid": paper.get("pmid"),
+                        "title": paper.get("title"),
+                        "year": paper.get("year"),
+                        "publication_type": paper.get("publication_type", []),
+                        "score": paper.get("score"),
+                        "semantic_score": paper.get("semantic_score"),
+                        "topic_penalty": paper.get("topic_penalty"),
+                        "url": paper.get("url"),
+                    }
+                    for paper in result.get("papers", [])
+                ],
+            })
+            tool_parts.append(types.Part(
+                function_response=types.FunctionResponse(
+                    name=fc.name,
+                    id=fc.id,
+                    response={"result": result},
+                )
+            ))
+
+        contents.append(types.Content(role="user", parts=tool_parts))
+
+    response = generate_content_with_retry(
+        phase="forced_final",
+        model="gemma-4-31b-it",
+        contents=contents,
+        config=FINAL_CONFIG,
+    )
+    reply, missing_urls, citations, format_warnings, repair_attempted = enforce_citation_urls(
+        response.text,
+        retrieved_urls,
+        retrieved_sources,
+    )
+    trace["forced_final"] = True
+    trace["citation_repair_attempted"] = repair_attempted
+    response_obj = {
+        "reply": reply,
+        "citation_warnings": missing_urls,
+        "citation_format_warnings": format_warnings,
+        "citations": citations,
+    }
+    if include_trace:
+        response_obj["trace"] = trace
+    return response_obj
+
+
 def has_citation_like_brackets(reply: str) -> bool:
     """Detect title-style bracket citations that are missing Markdown URLs."""
     without_valid_links = CITATION_PATTERN.sub("", reply or "")
@@ -1195,7 +1540,7 @@ def enforce_citation_urls(
 def add_cors(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
     return response
 
 
@@ -1209,193 +1554,93 @@ def search_ui():
     return send_from_directory(SEARCH_APP_DIR, "index.html")
 
 
+@app.route("/api/conversations", methods=["GET", "OPTIONS"])
+def conversations_api():
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        user_id = validate_user_id(request.args.get("user_id", ""))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    with contextlib.closing(get_conversation_db()) as db:
+        upsert_user(db, user_id)
+        conversations = list_conversations_for_user(db, user_id)
+        db.commit()
+    return jsonify({"conversations": conversations})
+
+
+@app.route("/api/conversations/<conversation_id>", methods=["GET", "DELETE", "OPTIONS"])
+def conversation_api(conversation_id):
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        user_id = validate_user_id(request.args.get("user_id", ""))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    with contextlib.closing(get_conversation_db()) as db:
+        upsert_user(db, user_id)
+        conversation = get_conversation(db, user_id, conversation_id)
+        if not conversation:
+            db.commit()
+            return jsonify({"error": "Conversation not found"}), 404
+        if request.method == "DELETE":
+            delete_conversation_for_user(db, user_id, conversation_id)
+            db.commit()
+            return "", 204
+        messages = load_messages_for_conversation(db, conversation_id)
+        db.commit()
+    return jsonify({"conversation": dict(conversation), "messages": messages})
+
+
 @app.route("/chat", methods=["POST", "OPTIONS"])
 def chat():
     if request.method == "OPTIONS":
         return "", 204
 
-    data = request.get_json()
-    messages = data.get("messages", [])
+    data = request.get_json() or {}
     include_trace = bool(data.get("trace"))
-    if not messages:
-        return jsonify({"error": "No messages provided"}), 400
+    message = (data.get("message") or "").strip()
+    conversation_id = (data.get("conversation_id") or "").strip() or None
+    try:
+        user_id = validate_user_id(data.get("user_id", ""))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if not message:
+        return jsonify({"error": "message is required"}), 400
 
-    last_message = messages[-1]["content"]
-    print(f"\n[user] {last_message[:80]}{'...' if len(last_message) > 80 else ''}")
-
-    if is_out_of_scope(last_message):
-        response_obj = {
-            "reply": (
-                "That question is outside this otology-focused literature index. "
-                "I can help with otology, hearing, vestibular, ear surgery, and closely related neurotology questions."
-            )
-        }
-        if include_trace:
-            response_obj["trace"] = {"out_of_scope": True, "tool_calls": []}
-        return jsonify(response_obj)
-
-    # Build contents from full conversation history
-    contents = []
-    for msg in messages[:-1]:
-        role = "user" if msg["role"] == "user" else "model"
-        contents.append(types.Content(role=role, parts=[types.Part(text=msg["content"])]))
-    contents.append(types.Content(role="user", parts=[types.Part(text=last_message)]))
+    print(f"\n[user] {message[:80]}{'...' if len(message) > 80 else ''}")
 
     try:
-        seen_pmids = set()
-        retrieved_urls = set()
-        retrieved_sources = {}
-        skip_rerank_for_request = False
-        trace = {
-            "out_of_scope": False,
-            "tool_calls": [],
-            "forced_final": False,
-            "rerank_disabled": False,
-            "citation_repair_attempted": False,
-        }
+        with contextlib.closing(get_conversation_db()) as db:
+            upsert_user(db, user_id)
+            if conversation_id:
+                if not get_conversation(db, user_id, conversation_id):
+                    db.commit()
+                    return jsonify({"error": "Conversation not found"}), 404
+            else:
+                conversation_id = create_conversation(db, user_id, message)
+            append_conversation_message(db, conversation_id, "user", message)
+            context_messages = load_context_messages(db, conversation_id)
+            db.commit()
 
-        # Agentic tool-calling loop
-        for turn in range(MAX_TOOL_TURNS):
-            response = generate_content_with_retry(
-                phase=f"agent_turn_{turn + 1}",
-                model="gemma-4-31b-it",
-                contents=contents,
-                config=AGENT_CONFIG,
-            )
+        if is_out_of_scope(message):
+            response_obj = {
+                "conversation_id": conversation_id,
+                "reply": (
+                    "That question is outside this otology-focused literature index. "
+                    "I can help with otology, hearing, vestibular, ear surgery, and closely related neurotology questions."
+                ),
+            }
+            if include_trace:
+                response_obj["trace"] = {"out_of_scope": True, "tool_calls": []}
+        else:
+            response_obj = run_agent(build_model_contents(context_messages), include_trace=include_trace)
+            response_obj["conversation_id"] = conversation_id
 
-            candidate = response.candidates[0]
-            function_calls = [p for p in candidate.content.parts if p.function_call]
-
-            # No tool calls → model is done, return the text answer
-            if not function_calls:
-                reply, missing_urls, citations, format_warnings, repair_attempted = enforce_citation_urls(
-                    response.text,
-                    retrieved_urls,
-                    retrieved_sources,
-                )
-                trace["citation_repair_attempted"] = repair_attempted
-                response_obj = {
-                    "reply": reply,
-                    "citation_warnings": missing_urls,
-                    "citation_format_warnings": format_warnings,
-                    "citations": citations,
-                }
-                if include_trace:
-                    response_obj["trace"] = trace
-                return jsonify(response_obj)
-
-            print(f"  [agent turn {turn + 1}] {len(function_calls)} search(es)")
-            # Strip any text preamble emitted alongside tool calls to keep context lean
-            tool_only_content = types.Content(role="model", parts=function_calls)
-            contents.append(tool_only_content)
-
-            # Execute each tool call and collect responses
-            tool_parts = []
-            for part in function_calls:
-                fc = part.function_call
-                query = fc.args.get("query", "")
-                mesh_terms = fc.args.get("mesh_terms") or []
-                publication_types = fc.args.get("publication_types") or []
-                year_from = fc.args.get("year_from")
-                year_to = fc.args.get("year_to")
-                journal = fc.args.get("journal")
-                max_results = fc.args.get("max_results")
-                print(
-                    f"    → query={query!r} mesh_terms={mesh_terms!r} "
-                    f"publication_types={publication_types!r} "
-                    f"year_from={year_from!r} year_to={year_to!r} journal={journal!r}"
-                )
-                try:
-                    result = search_and_rerank(
-                        query=query,
-                        mesh_terms=mesh_terms,
-                        publication_types=publication_types,
-                        year_from=year_from,
-                        year_to=year_to,
-                        journal=journal,
-                        max_results=max_results,
-                        seen_pmids=seen_pmids,
-                        skip_rerank=skip_rerank_for_request,
-                    )
-                except Exception as e:
-                    if "429" not in str(e):
-                        raise
-                    print("  [rerank disabled] embedding quota hit; using keyword order for this request")
-                    skip_rerank_for_request = True
-                    trace["rerank_disabled"] = True
-                    result = search_and_rerank(
-                        query=query,
-                        mesh_terms=mesh_terms,
-                        publication_types=publication_types,
-                        year_from=year_from,
-                        year_to=year_to,
-                        journal=journal,
-                        max_results=max_results,
-                        seen_pmids=seen_pmids,
-                        skip_rerank=True,
-                    )
-                for paper in result.get("papers", []):
-                    url = paper.get("url")
-                    if url:
-                        normalized_url = url.rstrip("/") + "/"
-                        retrieved_urls.add(normalized_url)
-                        retrieved_sources[normalized_url] = {
-                            "title": paper.get("title", ""),
-                            "year": paper.get("year"),
-                        }
-                trace["tool_calls"].append({
-                    "turn": turn + 1,
-                    "query": query,
-                    "filters": result.get("filters", {}),
-                    "query_variants": result.get("query_variants", []),
-                    "recovery_notes": result.get("recovery_notes", []),
-                    "count": result.get("count", 0),
-                    "papers": [
-                        {
-                            "pmid": paper.get("pmid"),
-                            "title": paper.get("title"),
-                            "year": paper.get("year"),
-                            "publication_type": paper.get("publication_type", []),
-                            "score": paper.get("score"),
-                            "semantic_score": paper.get("semantic_score"),
-                            "topic_penalty": paper.get("topic_penalty"),
-                            "url": paper.get("url"),
-                        }
-                        for paper in result.get("papers", [])
-                    ],
-                })
-                tool_parts.append(types.Part(
-                    function_response=types.FunctionResponse(
-                        name=fc.name,
-                        id=fc.id,
-                        response={"result": result},
-                    )
-                ))
-
-            contents.append(types.Content(role="user", parts=tool_parts))
-
-        # Reached the turn cap — force a final answer without tools
-        response = generate_content_with_retry(
-            phase="forced_final",
-            model="gemma-4-31b-it",
-            contents=contents,
-            config=FINAL_CONFIG,
-        )
-        reply, missing_urls, citations, format_warnings, repair_attempted = enforce_citation_urls(
-            response.text,
-            retrieved_urls,
-            retrieved_sources,
-        )
-        trace["forced_final"] = True
-        trace["citation_repair_attempted"] = repair_attempted
-        response_obj = {
-            "reply": reply,
-            "citation_warnings": missing_urls,
-            "citation_format_warnings": format_warnings,
-            "citations": citations,
-        }
-        if include_trace:
-            response_obj["trace"] = trace
+        with contextlib.closing(get_conversation_db()) as db:
+            if get_conversation(db, user_id, conversation_id):
+                append_conversation_message(db, conversation_id, "assistant", response_obj["reply"])
+            db.commit()
         return jsonify(response_obj)
 
     except urllib.error.URLError as e:

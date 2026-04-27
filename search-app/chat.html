@@ -89,14 +89,44 @@
       font-size: .83rem;
       cursor: pointer;
       color: #bbb;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
       margin-bottom: 1px;
       transition: background .1s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
     .conv-item:hover { background: #222; color: #eee; }
     .conv-item.active { background: #2b3d52; color: #e8f0f9; }
+    .conv-title {
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .delete-conv {
+      width: 22px;
+      height: 22px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: #777;
+      cursor: pointer;
+      flex-shrink: 0;
+      font-size: 1rem;
+      line-height: 1;
+    }
+    .delete-conv:hover {
+      background: #3a1f1f;
+      color: #f0b8b8;
+    }
+    .history-note {
+      color: #777;
+      font-size: .72rem;
+      line-height: 1.35;
+      padding: 8px 10px 12px;
+      border-top: 1px solid #242424;
+    }
 
     /* ── Main ──────────────────────────────────────────────── */
     .main {
@@ -325,6 +355,7 @@
     </button>
   </div>
   <div class="conv-list" id="conv-list"></div>
+  <div class="history-note">History is saved for this browser. Clearing site data loses access to saved chats.</div>
 </aside>
 
 <!-- Main -->
@@ -360,7 +391,7 @@
 <script>
   const API = '/chat';
   const CHAT_TIMEOUT_MS = 240000;
-  const STORAGE_KEY = 'otology-conversations-v1';
+  const USER_ID_KEY = 'otology-user-id-v1';
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -373,26 +404,42 @@
   const inputEl    = document.getElementById('input');
   const sendBtn    = document.getElementById('send');
   const convListEl = document.getElementById('conv-list');
+  const userId     = getUserId();
 
-  // ── Storage helpers ───────────────────────────────────────────
-  function loadConversations() {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
-    catch { return []; }
+  // ── API helpers ───────────────────────────────────────────────
+  function getUserId() {
+    let id = localStorage.getItem(USER_ID_KEY);
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem(USER_ID_KEY, id);
+    }
+    return id;
   }
 
-  function saveConversation(id, title, messages) {
-    const convs = loadConversations();
-    const idx = convs.findIndex(c => c.id === id);
-    const entry = { id, title, messages, updatedAt: Date.now() };
-    if (idx >= 0) convs[idx] = entry; else convs.unshift(entry);
-    convs.sort((a, b) => b.updatedAt - a.updatedAt);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(convs.slice(0, 60)));
+  async function apiFetch(url, options = {}) {
+    const res = await fetch(url, options);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Server error' }));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    if (res.status === 204) return null;
+    return res.json();
   }
 
   // ── Sidebar ───────────────────────────────────────────────────
-  function renderSidebar() {
-    const convs = loadConversations();
+  async function renderSidebar() {
     convListEl.innerHTML = '';
+    let convs = [];
+    try {
+      const data = await apiFetch(`/api/conversations?user_id=${encodeURIComponent(userId)}`);
+      convs = data.conversations || [];
+    } catch (err) {
+      const note = document.createElement('div');
+      note.className = 'conv-section-label';
+      note.textContent = 'History unavailable';
+      convListEl.appendChild(note);
+      return;
+    }
 
     if (!convs.length) {
       const note = document.createElement('div');
@@ -410,8 +457,23 @@
     convs.forEach(conv => {
       const item = document.createElement('div');
       item.className = 'conv-item' + (conv.id === currentConvId ? ' active' : '');
-      item.textContent = conv.title || 'Untitled';
       item.title = conv.title || 'Untitled';
+
+      const title = document.createElement('span');
+      title.className = 'conv-title';
+      title.textContent = conv.title || 'Untitled';
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'delete-conv';
+      deleteBtn.type = 'button';
+      deleteBtn.title = 'Delete conversation';
+      deleteBtn.textContent = '×';
+      deleteBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        deleteConversation(conv.id);
+      });
+
+      item.append(title, deleteBtn);
       item.addEventListener('click', () => loadConversation(conv.id));
       convListEl.appendChild(item);
     });
@@ -427,23 +489,39 @@
     inputEl.focus();
   }
 
-  function loadConversation(id) {
-    const conv = loadConversations().find(c => c.id === id);
-    if (!conv) return;
-    currentConvId = id;
-    currentMessages = conv.messages.slice();
-    messagesEl.innerHTML = '';
-    currentMessages.forEach(msg =>
-      addBubble(msg.role === 'user' ? 'user' : 'ai', msg.content, msg.role !== 'user')
-    );
-    renderSidebar();
+  async function loadConversation(id) {
+    try {
+      const data = await apiFetch(
+        `/api/conversations/${encodeURIComponent(id)}?user_id=${encodeURIComponent(userId)}`
+      );
+      currentConvId = id;
+      currentMessages = (data.messages || []).map(msg => ({
+        role: msg.role,
+        content: msg.content,
+      }));
+      messagesEl.innerHTML = '';
+      if (!currentMessages.length) messagesEl.appendChild(emptyState);
+      currentMessages.forEach(msg =>
+        addBubble(msg.role === 'user' ? 'user' : 'ai', msg.content, msg.role !== 'user')
+      );
+      renderSidebar();
+    } catch (err) {
+      addBubble('ai', `Error: ${err.message}`, false);
+      renderSidebar();
+    }
   }
 
-  function ensureConversation(firstUserMessage) {
-    if (!currentConvId) currentConvId = crypto.randomUUID();
-    const title = firstUserMessage.trim().slice(0, 60) +
-      (firstUserMessage.length > 60 ? '…' : '');
-    saveConversation(currentConvId, title, currentMessages);
+  async function deleteConversation(id) {
+    try {
+      await apiFetch(
+        `/api/conversations/${encodeURIComponent(id)}?user_id=${encodeURIComponent(userId)}`,
+        { method: 'DELETE' }
+      );
+      if (currentConvId === id) startNewConversation();
+      else renderSidebar();
+    } catch (err) {
+      addBubble('ai', `Error: ${err.message}`, false);
+    }
   }
 
   // ── Bubbles ───────────────────────────────────────────────────
@@ -499,10 +577,8 @@
     inputEl.style.height = 'auto';
     sendBtn.disabled = true;
 
-    const isFirst = currentMessages.length === 0;
     addBubble('user', text);
     currentMessages.push({ role: 'user', content: text });
-    if (isFirst) ensureConversation(text);
 
     addThinking();
 
@@ -513,7 +589,11 @@
       const res = await fetch(API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: currentMessages }),
+        body: JSON.stringify({
+          user_id: userId,
+          conversation_id: currentConvId,
+          message: text,
+        }),
         signal: controller.signal,
       });
 
@@ -525,15 +605,11 @@
       const data = await res.json();
       const reply = typeof data.reply === 'string' ? data.reply : data.error;
       if (!reply) throw new Error('Server returned no reply');
+      if (data.conversation_id) currentConvId = data.conversation_id;
 
       removeThinking();
       addBubble('ai', reply, true);
       currentMessages.push({ role: 'assistant', content: reply });
-      saveConversation(
-        currentConvId,
-        currentMessages[0].content.slice(0, 60),
-        currentMessages
-      );
       renderSidebar();
     } catch (err) {
       removeThinking();
