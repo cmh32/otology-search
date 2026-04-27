@@ -9,6 +9,8 @@ A clinical literature assistant for an APRN specializing in otology. It answers 
 - Runs up to five agentic tool-call turns to decompose multi-part questions
 - Returns a synthesized answer with inline citations to PubMed URLs
 - Flags any citation URLs that were not actually retrieved (hallucination guard)
+- Attempts one citation-format repair when the answer cites retrieved source titles without PubMed Markdown links
+- Retries transient model-provider failures such as intermittent Google GenAI `500 INTERNAL` responses
 - Rejects out-of-scope questions (rhinology, laryngology, ophthalmology) before searching
 
 ## Architecture
@@ -115,6 +117,8 @@ Optional:
 ```bash
 EMBEDDING_PROVIDER=openai             # default; set to "gemini" to use Gemini embeddings
 EMBEDDING_MODEL=text-embedding-3-large # overrides the default per provider
+MODEL_RETRY_ATTEMPTS=3                # retries transient model API failures
+MODEL_RETRY_BASE_DELAY_SECONDS=1      # exponential backoff base delay
 EMBEDDING_CACHE_PATH=data/runtime/embedding-cache.sqlite
 DISABLE_EMBEDDING_CACHE=1             # bypass the SQLite cache
 MEILI_HYBRID_SEARCH=1                 # default; set to 0 to force BM25 first-stage fetch
@@ -190,12 +194,13 @@ Response:
     "tool_calls": [...],
     "forced_final": false,
     "rerank_disabled": false,
-    "out_of_scope": false
+    "out_of_scope": false,
+    "citation_repair_attempted": false
   }
 }
 ```
 
-`citation_warnings` lists any PubMed URLs in the answer that were not returned by tool calls. `citation_format_warnings` lists citation-format problems such as an answer with retrieved papers but no valid PubMed citation links. `trace` is only included when `"trace": true` is sent in the request.
+`citation_warnings` lists any PubMed URLs in the answer that were not returned by tool calls. `citation_format_warnings` lists citation-format problems such as an answer with retrieved papers but no valid PubMed citation links. If retrieved papers exist but no valid citation links are parsed, the app attempts one citation repair using only retrieved source URLs; `trace.citation_repair_attempted` reports whether that happened. `trace` is only included when `"trace": true` is sent in the request.
 
 The `search_papers` tool accepts: `query` (required), `mesh_terms`, `publication_types`, `year_from`, `year_to`, `journal`, `max_results` (default 10, max 12).
 

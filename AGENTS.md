@@ -35,6 +35,15 @@ set -a && source .env && set +a && <your command>
 
 Key variables: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `MEILI_URL`, `MEILI_INDEX`, `MEILI_SEARCH_KEY`, `MEILI_WRITE_KEY`.
 
+Optional model-resilience variables:
+
+```bash
+MODEL_RETRY_ATTEMPTS=3
+MODEL_RETRY_BASE_DELAY_SECONDS=1
+```
+
+These control retry/backoff for transient Google GenAI model failures such as intermittent `500 INTERNAL` responses.
+
 Hybrid retrieval variables, now matching the runtime defaults:
 
 ```bash
@@ -132,3 +141,5 @@ Query → expand to up to 5 variants → Meilisearch native hybrid fetch by defa
 - Embedding cache lives at `data/runtime/embedding-cache.sqlite` (gitignored); set `DISABLE_EMBEDDING_CACHE=1` to bypass
 - Native hybrid search is enabled by default; set `MEILI_HYBRID_SEARCH=0` to force BM25-only first-stage fetch. The app still applies its own semantic reranker after Meili returns candidates
 - The model is `gemma-4-31b-it` (Gemma 4, not Gemini) — it supports native function-calling via the Google GenAI API
+- Google GenAI may intermittently return `500 INTERNAL`; the app retries transient model errors, and a single live benchmark failure should be rerun before treating it as a code regression
+- Citation-format failures should be checked with `citations`, `citation_format_warnings`, and `trace.citation_repair_attempted`; the app attempts one repair when retrieved source titles are cited without PubMed Markdown URLs
