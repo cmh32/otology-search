@@ -19,12 +19,15 @@ from agent.server import (  # noqa: E402
     delete_conversation_for_user,
     enforce_citation_urls,
     apply_clinical_contradiction_guardrails,
+    apply_citation_support_guardrails,
     detects_aom_under_two_overstatement,
     expand_query_variants,
     extracted_citations,
     generate_content_with_retry,
     get_conversation,
     get_conversation_db,
+    guideline_authority,
+    has_aap_support_for_aom_observation_criteria,
     journal_matches,
     journal_match_score,
     list_conversations_for_user,
@@ -32,6 +35,7 @@ from agent.server import (  # noqa: E402
     normalize_conversation_title,
     normalize_citation_markdown,
     prepare_citation_response,
+    retrieved_source_url,
     topic_penalty_for_hit,
     upsert_user,
 )
@@ -175,6 +179,39 @@ class TopicPenaltyTests(unittest.TestCase):
 
 
 class ClinicalGuardrailTests(unittest.TestCase):
+    def test_classifies_aap_guideline_as_us_major_society(self):
+        authority = guideline_authority(
+            "The diagnosis and management of acute otitis media",
+            "From the American Academy of Pediatrics and American Academy of Family Physicians.",
+            "Pediatrics",
+            ["Practice Guideline"],
+        )
+
+        self.assertEqual(authority, "us_major_society")
+
+    def test_retrieved_source_url_can_require_us_major_society_authority(self):
+        sources = {
+            "https://pubmed.ncbi.nlm.nih.gov/26099233/": {
+                "title": "Antibiotics for the diagnosis and management of acute otitis media in children: Cochrane review",
+                "year": 2015,
+                "guideline_authority": "systematic_review",
+            },
+            "https://pubmed.ncbi.nlm.nih.gov/23439909/": {
+                "title": "The diagnosis and management of acute otitis media",
+                "year": 2013,
+                "guideline_authority": "us_major_society",
+            },
+        }
+
+        self.assertEqual(
+            retrieved_source_url(
+                sources,
+                ["diagnosis", "management", "acute otitis media"],
+                required_authority="us_major_society",
+            ),
+            "https://pubmed.ncbi.nlm.nih.gov/23439909/",
+        )
+
     def test_detects_overbroad_under_two_aom_watchful_waiting_claim(self):
         reply = (
             "Consequently, clinical practice guidelines mandate prompt treatment for all children "
@@ -243,6 +280,7 @@ class ClinicalGuardrailTests(unittest.TestCase):
             "https://pubmed.ncbi.nlm.nih.gov/23439909/": {
                 "title": "The diagnosis and management of acute otitis media",
                 "year": 2013,
+                "guideline_authority": "us_major_society",
             }
         }
 
@@ -254,6 +292,102 @@ class ClinicalGuardrailTests(unittest.TestCase):
         self.assertIn("overbroad", guarded)
         self.assertIn("6-23 months with nonsevere unilateral AOM", guarded)
         self.assertIn("https://pubmed.ncbi.nlm.nih.gov/23439909/", guarded)
+
+    def test_citation_support_guardrail_adds_aap_link_for_aom_observation_matrix(self):
+        reply = (
+            "Observation is an option for children 6 months to 2 years with nonsevere unilateral "
+            "AOM and for children 2 years and older with nonsevere unilateral or bilateral AOM "
+            "[Updated Guidelines for the Management of Acute Otitis Media in Children by the "
+            "Italian Society of Pediatrics: Treatment (2019)](https://pubmed.ncbi.nlm.nih.gov/31876601/)."
+        )
+        sources = {
+            "https://pubmed.ncbi.nlm.nih.gov/23439909/": {
+                "title": "The diagnosis and management of acute otitis media",
+                "year": 2013,
+                "guideline_authority": "us_major_society",
+            }
+        }
+
+        supported, warnings = apply_citation_support_guardrails(reply, sources)
+
+        self.assertEqual(warnings, [
+            "Added AAP/AAFP citation support for AOM observation criteria."
+        ])
+        self.assertIn("Citation support check", supported)
+        self.assertIn("https://pubmed.ncbi.nlm.nih.gov/23439909/", supported)
+
+    def test_citation_support_guardrail_skips_when_aap_already_cited(self):
+        reply = (
+            "Observation is an option for nonsevere unilateral AOM "
+            "[The diagnosis and management of acute otitis media (2013)]"
+            "(https://pubmed.ncbi.nlm.nih.gov/23439909/)."
+        )
+        sources = {
+            "https://pubmed.ncbi.nlm.nih.gov/23439909/": {
+                "title": "The diagnosis and management of acute otitis media",
+                "year": 2013,
+                "guideline_authority": "us_major_society",
+            }
+        }
+
+        supported, warnings = apply_citation_support_guardrails(reply, sources)
+
+        self.assertEqual(warnings, [])
+        self.assertEqual(supported, reply)
+
+    def test_citation_support_guardrail_adds_note_when_aap_only_cited_in_background(self):
+        reply = (
+            "The primary U.S. guideline is [The diagnosis and management of acute otitis media "
+            "(2013)](https://pubmed.ncbi.nlm.nih.gov/23439909/). "
+            "Criteria for Observation: children with nonsevere unilateral AOM may be observed "
+            "[Implementing guidelines for the treatment of acute otitis media (2006)]"
+            "(https://pubmed.ncbi.nlm.nih.gov/17089870/)."
+        )
+        sources = {
+            "https://pubmed.ncbi.nlm.nih.gov/23439909/": {
+                "title": "The diagnosis and management of acute otitis media",
+                "year": 2013,
+                "guideline_authority": "us_major_society",
+            }
+        }
+
+        supported, warnings = apply_citation_support_guardrails(reply, sources)
+
+        self.assertEqual(warnings, [
+            "Added AAP/AAFP citation support for AOM observation criteria."
+        ])
+        self.assertIn("Citation support check", supported)
+
+    def test_detects_aap_support_near_aom_observation_criteria(self):
+        reply = (
+            "Criteria for Observation: children with nonsevere unilateral AOM may be observed "
+            "[The diagnosis and management of acute otitis media (2013)]"
+            "(https://pubmed.ncbi.nlm.nih.gov/23439909/)."
+        )
+
+        self.assertTrue(
+            has_aap_support_for_aom_observation_criteria(
+                reply,
+                "https://pubmed.ncbi.nlm.nih.gov/23439909/",
+            )
+        )
+
+    def test_watchful_waiting_phrase_does_not_prevent_later_aap_criteria_support(self):
+        reply = (
+            "Some intro about watchful waiting in older studies "
+            "[Old (2006)](https://pubmed.ncbi.nlm.nih.gov/17089870/). "
+            + ("filler " * 260)
+            + "Per AAP, nonsevere unilateral AOM may be observed "
+            "[The diagnosis and management of acute otitis media (2013)]"
+            "(https://pubmed.ncbi.nlm.nih.gov/23439909/)."
+        )
+
+        self.assertTrue(
+            has_aap_support_for_aom_observation_criteria(
+                reply,
+                "https://pubmed.ncbi.nlm.nih.gov/23439909/",
+            )
+        )
 
     def test_aom_query_expansion_adds_pediatric_guideline_variants(self):
         variants = expand_query_variants(

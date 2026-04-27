@@ -64,7 +64,7 @@ Choose evidence based on the user's intent:
 - Rank primary evidence by study design: systematic reviews/meta-analyses, randomized trials, prospective comparative studies, then retrospective cohorts/case series.
 - Use lower-level studies only when higher-level evidence is absent, conflicting, or too sparse.
 - Do not present uncontrolled, single-center, or older cohort studies as strong evidence when higher-level evidence is weak or uncertain.
-- When multiple guidelines on the same topic were retrieved, cite each relevant one in the answer — do not anchor on a single guideline when others address the same point. A guideline from a major US society (AAP, AAO-HNS, AAFP) warrants citation even when a more recent international consensus was also retrieved.
+- When multiple guidelines on the same topic were retrieved, cite each relevant one that adds distinct guidance. For U.S. management criteria, a retrieved U.S. major-society guideline (AAP, AAO-HNS, AAFP) must be one of the citations supporting the criterion; international guidance may be cited alongside it for differences, updates, or gaps, but not as its replacement.
 - If a guideline and a newer systematic review, meta-analysis, or trial point in different directions, state the conflict directly, prioritize the guideline for current standard-of-care framing, and explain whether the newer evidence is strong enough to qualify or challenge that guidance.
 - For follow-up questions that ask "why" a previously stated clinical rule is true, first verify the premise against retrieved guideline evidence. If the premise is false, overbroad, or missing exceptions, correct it explicitly before explaining the narrower true rule.
 - Avoid absolute clinical claims such as "all", "never", "always", "regardless", or "mandate" unless the retrieved guideline actually states that rule without relevant exceptions.
@@ -101,7 +101,7 @@ Use exactly one opening bracket per citation link, like [Title (Year)](URL), nev
 
 Write a concise synthesis from the retrieved papers. Do not call or request tools.
 The user is in the United States. For guideline-based management or standard-of-care questions, prioritize U.S. society or public-health guidance when relevant over newer international consensus statements; mention international differences only after the U.S. position is clear.
-When multiple guidelines on the same topic were retrieved, cite each relevant one — do not anchor on a single guideline when others address the same point.
+When multiple guidelines on the same topic were retrieved, cite each relevant one that adds distinct guidance. For U.S. management criteria, a retrieved U.S. major-society guideline must be one of the citations supporting the criterion; international guidance may be cited alongside it for differences, updates, or gaps, but not as its replacement.
 If a guideline and a newer systematic review, meta-analysis, or trial point in different directions, state the conflict directly, prioritize the guideline for current standard-of-care framing, and explain whether the newer evidence is strong enough to qualify or challenge that guidance.
 For follow-up questions that ask "why" a previously stated clinical rule is true, first verify the premise against retrieved guideline evidence. If the premise is false, overbroad, or missing exceptions, correct it explicitly before explaining the narrower true rule.
 Avoid absolute clinical claims such as "all", "never", "always", "regardless", or "mandate" unless the retrieved guideline actually states that rule without relevant exceptions.
@@ -556,6 +556,34 @@ def guideline_source_boost(title: str, abstract: str, journal: str) -> float:
     if "clinical practice guideline" in title.lower() and "update" in title.lower():
         boost += 0.06
     return boost
+
+
+def guideline_authority(title: str, abstract: str, journal: str, publication_types: list[str]) -> str:
+    haystack = f"{title} {abstract[:1000]} {journal}".lower()
+    pub_types = {pub_type.lower() for pub_type in publication_types or []}
+    is_guideline = bool(pub_types & {"practice guideline", "guideline"}) or any(
+        marker in haystack for marker in GUIDELINE_PHRASE_MARKERS
+    )
+    if is_guideline and any(marker in haystack for marker in US_GUIDELINE_MARKERS):
+        return "us_major_society"
+    if is_guideline:
+        return "international_or_other_guideline"
+    if pub_types & {"systematic review", "meta-analysis"}:
+        return "systematic_review"
+    if "randomized controlled trial" in pub_types:
+        return "randomized_trial"
+    return "other"
+
+
+def evidence_tier(authority: str) -> int:
+    tiers = {
+        "us_major_society": 1,
+        "international_or_other_guideline": 2,
+        "systematic_review": 3,
+        "randomized_trial": 4,
+        "other": 5,
+    }
+    return tiers.get(authority, 5)
 
 
 def recency_boost_for_year(year: int | None, guideline_intent: bool) -> float:
@@ -1062,6 +1090,12 @@ def search_and_rerank(
     for h in hits:
         if seen_pmids is not None and h.get("pmid"):
             seen_pmids.add(h["pmid"])
+        authority = guideline_authority(
+            h.get("title", ""),
+            h.get("abstract", ""),
+            h.get("journal", ""),
+            h.get("publication_type", []),
+        )
         papers.append({
             "pmid": h.get("pmid"),
             "title": h.get("title", ""),
@@ -1071,6 +1105,9 @@ def search_and_rerank(
             "pubdate": h.get("pubdate", ""),
             "mesh_terms": h.get("mesh_terms", []),
             "publication_type": h.get("publication_type", []),
+            "guideline_authority": authority,
+            "evidence_tier": evidence_tier(authority),
+            "preferred_for_us_guidance": authority == "us_major_society",
             "url": h.get("url", ""),
             "abstract": h.get("abstract", ""),
             "score": h.get("_score"),
@@ -1143,15 +1180,32 @@ def extracted_citations(reply: str) -> list[dict]:
 def retrieved_source_markdown_link(
     retrieved_sources: dict[str, dict],
     title_markers: list[str],
+    required_authority: str | None = None,
 ) -> str:
     for url, source in retrieved_sources.items():
         title = (source.get("title") or "").lower()
+        if required_authority and source.get("guideline_authority") != required_authority:
+            continue
         if all(marker in title for marker in title_markers):
             year = source.get("year")
             label = source.get("title") or "Retrieved guideline"
             if year:
                 label = f"{label} ({year})"
             return f"[{label}]({url})"
+    return ""
+
+
+def retrieved_source_url(
+    retrieved_sources: dict[str, dict],
+    title_markers: list[str],
+    required_authority: str | None = None,
+) -> str:
+    for url, source in retrieved_sources.items():
+        title = (source.get("title") or "").lower()
+        if required_authority and source.get("guideline_authority") != required_authority:
+            continue
+        if all(marker in title for marker in title_markers):
+            return url
     return ""
 
 
@@ -1181,6 +1235,7 @@ def apply_clinical_contradiction_guardrails(
     aap_link = retrieved_source_markdown_link(
         retrieved_sources,
         ["diagnosis", "management", "acute otitis media"],
+        required_authority="us_major_society",
     )
     citation = f" {aap_link}" if aap_link else ""
     correction = (
@@ -1192,6 +1247,89 @@ def apply_clinical_contradiction_guardrails(
     )
     warnings.append("Corrected overbroad AOM watchful-waiting claim for children under 2.")
     return (reply or "") + correction, warnings
+
+
+def applies_aom_observation_matrix(reply: str) -> bool:
+    lower = (reply or "").lower()
+    if "otitis media" not in lower and "aom" not in lower:
+        return False
+    if "watchful waiting" not in lower and "observation" not in lower:
+        return False
+    decision_markers = (
+        "nonsevere",
+        "non-severe",
+        "unilateral",
+        "bilateral",
+        "severe",
+        "otorrhea",
+        "6 months",
+        "23 months",
+        "2 years",
+    )
+    return any(marker in lower for marker in decision_markers)
+
+
+def has_aap_support_for_aom_observation_criteria(reply: str, aap_url: str) -> bool:
+    normalized_url = aap_url.rstrip("/") + "/"
+    lower = reply or ""
+    normalized_reply_urls = {url.rstrip("/") + "/" for url in URL_PATTERN.findall(lower)}
+    if normalized_url not in normalized_reply_urls:
+        return False
+
+    lower = lower.lower()
+    criteria_headings = [
+        "criteria for observation",
+        "observation option",
+        "observation (watchful waiting)",
+        "indications for observation",
+        "observation vs. immediate antibiotics",
+    ]
+    for heading in criteria_headings:
+        heading_index = lower.find(heading)
+        if heading_index >= 0:
+            nearby_text = reply[heading_index:heading_index + 1200]
+            nearby_urls = {url.rstrip("/") + "/" for url in URL_PATTERN.findall(nearby_text)}
+            return normalized_url in nearby_urls
+
+    for marker in ["nonsevere", "non-severe", "unilateral", "bilateral", "48 to 72"]:
+        marker_index = lower.find(marker)
+        if marker_index >= 0:
+            nearby_text = reply[max(0, marker_index - 500):marker_index + 700]
+            nearby_urls = {url.rstrip("/") + "/" for url in URL_PATTERN.findall(nearby_text)}
+            if normalized_url in nearby_urls:
+                return True
+    return False
+
+
+def apply_citation_support_guardrails(
+    reply: str,
+    retrieved_sources: dict[str, dict],
+) -> tuple[str, list[str]]:
+    warnings = []
+    aap_url = retrieved_source_url(
+        retrieved_sources,
+        ["diagnosis", "management", "acute otitis media"],
+        required_authority="us_major_society",
+    )
+    if not aap_url or not applies_aom_observation_matrix(reply):
+        return reply, warnings
+    if has_aap_support_for_aom_observation_criteria(reply, aap_url):
+        return reply, warnings
+
+    aap_link = retrieved_source_markdown_link(
+        retrieved_sources,
+        ["diagnosis", "management", "acute otitis media"],
+        required_authority="us_major_society",
+    )
+    if not aap_link:
+        return reply, warnings
+
+    note = (
+        "\n\nCitation support check: the AOM observation criteria above should be anchored "
+        f"to the retrieved U.S. AAP/AAFP guideline: {aap_link}."
+    )
+    warnings.append("Added AAP/AAFP citation support for AOM observation criteria.")
+    return (reply or "") + note, warnings
 
 
 def is_transient_model_error(error: Exception) -> bool:
@@ -1427,6 +1565,7 @@ def run_agent(contents: list, include_trace: bool = False) -> dict:
         "rerank_disabled": False,
         "citation_repair_attempted": False,
         "clinical_guardrail_warnings": [],
+        "citation_support_warnings": [],
     }
 
     for turn in range(MAX_TOOL_TURNS):
@@ -1445,18 +1584,24 @@ def run_agent(contents: list, include_trace: bool = False) -> dict:
                 response.text,
                 retrieved_sources,
             )
-            reply, missing_urls, citations, format_warnings, repair_attempted = enforce_citation_urls(
+            supported_text, support_warnings = apply_citation_support_guardrails(
                 guarded_text,
+                retrieved_sources,
+            )
+            reply, missing_urls, citations, format_warnings, repair_attempted = enforce_citation_urls(
+                supported_text,
                 retrieved_urls,
                 retrieved_sources,
             )
             trace["citation_repair_attempted"] = repair_attempted
             trace["clinical_guardrail_warnings"].extend(clinical_warnings)
+            trace["citation_support_warnings"].extend(support_warnings)
             response_obj = {
                 "reply": reply,
                 "citation_warnings": missing_urls,
                 "citation_format_warnings": format_warnings,
                 "clinical_guardrail_warnings": clinical_warnings,
+                "citation_support_warnings": support_warnings,
                 "citations": citations,
             }
             if include_trace:
@@ -1518,6 +1663,9 @@ def run_agent(contents: list, include_trace: bool = False) -> dict:
                     retrieved_sources[normalized_url] = {
                         "title": paper.get("title", ""),
                         "year": paper.get("year"),
+                        "guideline_authority": paper.get("guideline_authority"),
+                        "evidence_tier": paper.get("evidence_tier"),
+                        "preferred_for_us_guidance": paper.get("preferred_for_us_guidance"),
                     }
             trace["tool_calls"].append({
                 "turn": turn + 1,
@@ -1532,6 +1680,9 @@ def run_agent(contents: list, include_trace: bool = False) -> dict:
                         "title": paper.get("title"),
                         "year": paper.get("year"),
                         "publication_type": paper.get("publication_type", []),
+                        "guideline_authority": paper.get("guideline_authority"),
+                        "evidence_tier": paper.get("evidence_tier"),
+                        "preferred_for_us_guidance": paper.get("preferred_for_us_guidance"),
                         "score": paper.get("score"),
                         "semantic_score": paper.get("semantic_score"),
                         "topic_penalty": paper.get("topic_penalty"),
@@ -1560,19 +1711,25 @@ def run_agent(contents: list, include_trace: bool = False) -> dict:
         response.text,
         retrieved_sources,
     )
-    reply, missing_urls, citations, format_warnings, repair_attempted = enforce_citation_urls(
+    supported_text, support_warnings = apply_citation_support_guardrails(
         guarded_text,
+        retrieved_sources,
+    )
+    reply, missing_urls, citations, format_warnings, repair_attempted = enforce_citation_urls(
+        supported_text,
         retrieved_urls,
         retrieved_sources,
     )
     trace["forced_final"] = True
     trace["citation_repair_attempted"] = repair_attempted
     trace["clinical_guardrail_warnings"].extend(clinical_warnings)
+    trace["citation_support_warnings"].extend(support_warnings)
     response_obj = {
         "reply": reply,
         "citation_warnings": missing_urls,
         "citation_format_warnings": format_warnings,
         "clinical_guardrail_warnings": clinical_warnings,
+        "citation_support_warnings": support_warnings,
         "citations": citations,
     }
     if include_trace:

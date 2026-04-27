@@ -87,6 +87,7 @@ def run_question(client, question: dict) -> dict:
         "citation_warnings": payload.get("citation_warnings", []),
         "citation_format_warnings": payload.get("citation_format_warnings", []),
         "clinical_guardrail_warnings": payload.get("clinical_guardrail_warnings", []),
+        "citation_support_warnings": payload.get("citation_support_warnings", []),
         "trace": payload.get("trace", {}),
         "error": payload.get("error"),
         "server_log": stdout_buffer.getvalue().splitlines(),
@@ -111,6 +112,7 @@ def run_retrieval_question(question: dict, max_results: int) -> dict:
         "citation_warnings": [],
         "citation_format_warnings": [],
         "clinical_guardrail_warnings": [],
+        "citation_support_warnings": [],
         "trace": {
             "retrieval_only": True,
             "tool_calls": [result],
@@ -154,6 +156,7 @@ def summarize_result(result: dict) -> dict:
         "citation_warnings": len(result.get("citation_warnings") or []),
         "citation_format_warnings": len(result.get("citation_format_warnings") or []),
         "clinical_guardrail_warnings": len(result.get("clinical_guardrail_warnings") or []),
+        "citation_support_warnings": len(result.get("citation_support_warnings") or []),
         "zero_citations": (
             not trace.get("out_of_scope")
             and not trace.get("retrieval_only")
@@ -178,8 +181,8 @@ def write_summary(path: Path, metadata: dict, results: list[dict]) -> None:
         f"- Embedding model: `{metadata['embedding_model']}`",
         f"- Mode: `{'retrieval-only' if metadata.get('retrieval_only') else 'full-agent'}`",
         "",
-        "| ID | Status | Tools | Cites | Zero Cites | URL Warnings | Format Warnings | Clinical Warnings | Forced | Rerank Fallback | Question |",
-        "|---:|---:|---:|---:|:---:|---:|---:|---:|:---:|:---:|---|",
+        "| ID | Status | Tools | Cites | Zero Cites | URL Warnings | Format Warnings | Clinical Warnings | Support Warnings | Forced | Rerank Fallback | Question |",
+        "|---:|---:|---:|---:|:---:|---:|---:|---:|---:|:---:|:---:|---|",
     ]
     for result in results:
         trace = result.get("trace") or {}
@@ -195,6 +198,7 @@ def write_summary(path: Path, metadata: dict, results: list[dict]) -> None:
             f"{len(result.get('citation_warnings') or [])} | "
             f"{len(result.get('citation_format_warnings') or [])} | "
             f"{len(result.get('clinical_guardrail_warnings') or [])} | "
+            f"{len(result.get('citation_support_warnings') or [])} | "
             f"{'Y' if trace.get('forced_final') else ''} | "
             f"{'Y' if trace.get('rerank_disabled') or rerank_fallback else ''} | "
             f"{question} |"
@@ -223,6 +227,7 @@ def write_answers(path: Path, results_path: Path, results: list[dict]) -> None:
             f"- Citation URL warnings: `{len(result.get('citation_warnings') or [])}`",
             f"- Citation format warnings: `{len(result.get('citation_format_warnings') or [])}`",
             f"- Clinical guardrail warnings: `{len(result.get('clinical_guardrail_warnings') or [])}`",
+            f"- Citation support warnings: `{len(result.get('citation_support_warnings') or [])}`",
             "",
         ])
 
