@@ -18,6 +18,9 @@ from agent.server import (  # noqa: E402
     create_conversation,
     delete_conversation_for_user,
     enforce_citation_urls,
+    apply_clinical_contradiction_guardrails,
+    detects_aom_under_two_overstatement,
+    expand_query_variants,
     extracted_citations,
     generate_content_with_retry,
     get_conversation,
@@ -169,6 +172,70 @@ class TopicPenaltyTests(unittest.TestCase):
         )
 
         self.assertEqual(penalty, 0.0)
+
+
+class ClinicalGuardrailTests(unittest.TestCase):
+    def test_detects_overbroad_under_two_aom_watchful_waiting_claim(self):
+        reply = (
+            "Consequently, clinical practice guidelines mandate prompt treatment for all children "
+            "under 2 years of age with acute otitis media rather than watchful waiting, regardless "
+            "of whether the AOM is unilateral or bilateral, or mild or severe."
+        )
+
+        self.assertTrue(detects_aom_under_two_overstatement(reply))
+
+    def test_does_not_flag_qualified_under_two_aom_guidance(self):
+        reply = (
+            "This premise is overbroad: children 6-23 months with nonsevere unilateral AOM may be "
+            "managed with observation/watchful waiting when follow-up is reliable, while bilateral "
+            "AOM, otorrhea, or severe symptoms warrant antibiotics."
+        )
+
+        self.assertFalse(detects_aom_under_two_overstatement(reply))
+
+    def test_does_not_flag_qualified_aom_guidance_when_nonsevere_precedes_unilateral(self):
+        reply = (
+            "All children under 2 with bilateral AOM need antibiotics. Nonsevere unilateral cases "
+            "may use observation/watchful waiting when follow-up is reliable."
+        )
+
+        self.assertFalse(detects_aom_under_two_overstatement(reply))
+
+    def test_does_not_flag_benign_all_the_studies_phrase(self):
+        reply = (
+            "All the studies on children under 2 with AOM compared antibiotic therapy versus "
+            "watchful waiting and reported subgroup results."
+        )
+
+        self.assertFalse(detects_aom_under_two_overstatement(reply))
+
+    def test_guardrail_appends_aom_under_two_correction_with_retrieved_aap_link(self):
+        reply = (
+            "Guidelines require prompt antibiotic treatment for all children under 2 with AOM "
+            "rather than watchful waiting."
+        )
+        sources = {
+            "https://pubmed.ncbi.nlm.nih.gov/23439909/": {
+                "title": "The diagnosis and management of acute otitis media",
+                "year": 2013,
+            }
+        }
+
+        guarded, warnings = apply_clinical_contradiction_guardrails(reply, sources)
+
+        self.assertEqual(warnings, [
+            "Corrected overbroad AOM watchful-waiting claim for children under 2."
+        ])
+        self.assertIn("overbroad", guarded)
+        self.assertIn("6-23 months with nonsevere unilateral AOM", guarded)
+        self.assertIn("https://pubmed.ncbi.nlm.nih.gov/23439909/", guarded)
+
+    def test_aom_query_expansion_adds_pediatric_guideline_variants(self):
+        variants = expand_query_variants(
+            "Why do children under 2 require prompt treatment rather than watchful waiting for AOM?"
+        )
+
+        self.assertTrue(any("AAP AAFP acute otitis media guideline" in variant for variant in variants))
 
 
 class ModelRetryTests(unittest.TestCase):

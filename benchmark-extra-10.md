@@ -1,6 +1,6 @@
 # Otology Agent Extra Smoke Test
 
-Ten additional full-pipeline questions for validating hybrid retrieval outside the canonical benchmark set.
+Twelve additional full-pipeline questions for validating hybrid retrieval outside the canonical benchmark set.
 
 ## Questions
 
@@ -16,3 +16,5 @@ Ten additional full-pipeline questions for validating hybrid retrieval outside t
 8. For small vestibular schwannomas, what evidence compares observation, stereotactic radiosurgery, and microsurgery for hearing preservation?
 9. In adults with obstructive Eustachian tube dysfunction, what is the durability of benefit after balloon dilation and which patients were studied?
 10. What is the evidence for ototoxicity monitoring protocols in patients receiving aminoglycosides or cisplatin?
+11. In acute otitis media, can a 20-month-old with nonsevere unilateral disease be managed with watchful waiting, and what follow-up is required?
+12. Why do children under 2 years of age require prompt treatment rather than watchful waiting for acute otitis media?

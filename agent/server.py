@@ -58,6 +58,7 @@ If a search returns few or no relevant results, broaden before answering: remove
 Search broadly first, then narrow.
 
 Choose evidence based on the user's intent:
+- The user is in the United States. For guideline-based management or standard-of-care questions, prioritize U.S. society or public-health guidance when relevant (for example AAP, AAFP, AAO-HNS, CDC, ACR, CNS) over newer international consensus statements; mention international differences only after the U.S. position is clear.
 - For current indications, recommendations, guidelines, or standard-of-care questions, prioritize authoritative clinical practice guidelines and consensus statements from major societies, then high-level reviews before individual studies.
 - For treatment-evidence questions, always issue at least one search targeting clinical practice guidelines or consensus statements on the topic in addition to searching for primary studies. Guidelines synthesize the evidence and define standard of care — they should anchor the answer even when the question is framed around individual studies or treatment comparisons.
 - Rank primary evidence by study design: systematic reviews/meta-analyses, randomized trials, prospective comparative studies, then retrospective cohorts/case series.
@@ -65,6 +66,9 @@ Choose evidence based on the user's intent:
 - Do not present uncontrolled, single-center, or older cohort studies as strong evidence when higher-level evidence is weak or uncertain.
 - When multiple guidelines on the same topic were retrieved, cite each relevant one in the answer — do not anchor on a single guideline when others address the same point. A guideline from a major US society (AAP, AAO-HNS, AAFP) warrants citation even when a more recent international consensus was also retrieved.
 - If a guideline and a newer systematic review, meta-analysis, or trial point in different directions, state the conflict directly, prioritize the guideline for current standard-of-care framing, and explain whether the newer evidence is strong enough to qualify or challenge that guidance.
+- For follow-up questions that ask "why" a previously stated clinical rule is true, first verify the premise against retrieved guideline evidence. If the premise is false, overbroad, or missing exceptions, correct it explicitly before explaining the narrower true rule.
+- Avoid absolute clinical claims such as "all", "never", "always", "regardless", or "mandate" unless the retrieved guideline actually states that rule without relevant exceptions.
+- When a recommendation depends on age, severity, laterality, otorrhea, prior treatment, or allergy status, preserve that decision matrix in the answer rather than collapsing it into a single prose rule.
 
 In the final answer, distinguish when relevant between:
 - strength of evidence
@@ -96,8 +100,12 @@ Do not cite by title alone, and do not group multiple titles inside one bracket.
 Use exactly one opening bracket per citation link, like [Title (Year)](URL), never [[Title (Year)](URL).
 
 Write a concise synthesis from the retrieved papers. Do not call or request tools.
+The user is in the United States. For guideline-based management or standard-of-care questions, prioritize U.S. society or public-health guidance when relevant over newer international consensus statements; mention international differences only after the U.S. position is clear.
 When multiple guidelines on the same topic were retrieved, cite each relevant one — do not anchor on a single guideline when others address the same point.
 If a guideline and a newer systematic review, meta-analysis, or trial point in different directions, state the conflict directly, prioritize the guideline for current standard-of-care framing, and explain whether the newer evidence is strong enough to qualify or challenge that guidance.
+For follow-up questions that ask "why" a previously stated clinical rule is true, first verify the premise against retrieved guideline evidence. If the premise is false, overbroad, or missing exceptions, correct it explicitly before explaining the narrower true rule.
+Avoid absolute clinical claims such as "all", "never", "always", "regardless", or "mandate" unless the retrieved guideline actually states that rule without relevant exceptions.
+When a recommendation depends on age, severity, laterality, otorrhea, prior treatment, or allergy status, preserve that decision matrix in the answer rather than collapsing it into a single prose rule.
 
 If the user asks about treatment evidence or recommendations, organize the answer in this order:
 1. Overall evidence quality.
@@ -253,6 +261,25 @@ URL_PATTERN = re.compile(r"https://pubmed\.ncbi\.nlm\.nih\.gov/\d+/?")
 CITATION_PATTERN = re.compile(r"\[([^\]]+)\]\((https://pubmed\.ncbi\.nlm\.nih\.gov/\d+/?)\)")
 DOUBLE_BRACKET_CITATION_PATTERN = re.compile(r"\[\[([^\]]+)\]\((https://pubmed\.ncbi\.nlm\.nih\.gov/\d+/?)\)")
 CITATION_LIKE_BRACKET_PATTERN = re.compile(r"\[[^\]\n]{12,}\]")
+AOM_UNDER_TWO_AGE_PATTERN = re.compile(
+    r"\b(under|younger than|less than)\s+(?:2|two)\b|"
+    r"\b6\s*(?:-|to|through)\s*23\s*months\b|"
+    r"\b6\s*months\s*(?:to|through)\s*(?:2|two)\s*years\b",
+    re.IGNORECASE,
+)
+AOM_ABSOLUTE_TREATMENT_PATTERN = re.compile(
+    r"\ball\s+(?:children|infants|patients|cases)\b|"
+    r"\b(always|never|regardless|mandate|mandates|contraindication|contraindications)\b|"
+    r"\brequire(?:s|d)?\s+prompt\b|"
+    r"\bprompt\s+(?:antibiotic\s+)?treatment\s+.*\bregardless\b",
+    re.IGNORECASE,
+)
+AOM_PREMISE_CORRECTION_SKIP_PATTERN = re.compile(
+    r"\b(false premise|overbroad|not all|does not require|do not require|"
+    r"(?:unilateral\s+nonsevere|nonsevere\s+unilateral).*(?:observation|watchful waiting)|"
+    r"(?:observation|watchful waiting).*(?:unilateral\s+nonsevere|nonsevere\s+unilateral))\b",
+    re.IGNORECASE,
+)
 
 QUERY_EXPANSIONS = {
     "ssnhl": "sudden sensorineural hearing loss",
@@ -295,11 +322,18 @@ EVIDENCE_INTENT_TERMS = {
 US_GUIDELINE_MARKERS = {
     "aao-hns",
     "aao-hnsf",
+    "aap",
+    "aap/aafp",
+    "aafp",
     "american academy of otolaryngology",
     "american academy of otolaryngology-head and neck surgery",
+    "american academy of pediatrics",
+    "american academy of family physicians",
     "american college of radiology",
     "acr appropriateness criteria",
     "congress of neurological surgeons",
+    "centers for disease control",
+    "cdc",
 }
 
 GUIDELINE_PHRASE_MARKERS = {
@@ -428,6 +462,14 @@ def expand_query_variants(query: str, publication_types: list[str] | None = None
         for suffix in [
             "clinical practice guideline consensus statement",
             "AAO-HNS guideline",
+        ]:
+            if suffix.lower() not in normalized:
+                variants.append(f"{query} {suffix}")
+
+    if ("otitis" in terms and "media" in terms) or "aom" in terms:
+        for suffix in [
+            "AAP AAFP acute otitis media guideline",
+            "pediatric acute otitis media watchful waiting observation",
         ]:
             if suffix.lower() not in normalized:
                 variants.append(f"{query} {suffix}")
@@ -1092,6 +1134,60 @@ def extracted_citations(reply: str) -> list[dict]:
     return result
 
 
+def retrieved_source_markdown_link(
+    retrieved_sources: dict[str, dict],
+    title_markers: list[str],
+) -> str:
+    for url, source in retrieved_sources.items():
+        title = (source.get("title") or "").lower()
+        if all(marker in title for marker in title_markers):
+            year = source.get("year")
+            label = source.get("title") or "Retrieved guideline"
+            if year:
+                label = f"{label} ({year})"
+            return f"[{label}]({url})"
+    return ""
+
+
+def detects_aom_under_two_overstatement(reply: str) -> bool:
+    normalized = reply or ""
+    lower = normalized.lower()
+    if "otitis media" not in lower and "aom" not in lower:
+        return False
+    if "watchful waiting" not in lower and "observation" not in lower:
+        return False
+    if not AOM_UNDER_TWO_AGE_PATTERN.search(normalized):
+        return False
+    if AOM_PREMISE_CORRECTION_SKIP_PATTERN.search(normalized):
+        return False
+    return bool(AOM_ABSOLUTE_TREATMENT_PATTERN.search(normalized))
+
+
+def apply_clinical_contradiction_guardrails(
+    reply: str,
+    retrieved_sources: dict[str, dict],
+) -> tuple[str, list[str]]:
+    """Patch narrow, high-confidence clinical overstatements before returning a reply."""
+    warnings = []
+    if not detects_aom_under_two_overstatement(reply):
+        return reply, warnings
+
+    aap_link = retrieved_source_markdown_link(
+        retrieved_sources,
+        ["diagnosis", "management", "acute otitis media"],
+    )
+    citation = f" {aap_link}" if aap_link else ""
+    correction = (
+        "\n\nClinical accuracy check: the under-2 rule is overbroad. "
+        "U.S. AAP/AAFP guidance allows observation with close follow-up for children "
+        "6-23 months with nonsevere unilateral AOM; prompt antibiotics are recommended "
+        "for severe AOM, otorrhea, or bilateral AOM in this age group."
+        f"{citation}"
+    )
+    warnings.append("Corrected overbroad AOM watchful-waiting claim for children under 2.")
+    return (reply or "") + correction, warnings
+
+
 def is_transient_model_error(error: Exception) -> bool:
     msg = str(error).lower()
     transient_markers = (
@@ -1324,6 +1420,7 @@ def run_agent(contents: list, include_trace: bool = False) -> dict:
         "forced_final": False,
         "rerank_disabled": False,
         "citation_repair_attempted": False,
+        "clinical_guardrail_warnings": [],
     }
 
     for turn in range(MAX_TOOL_TURNS):
@@ -1338,16 +1435,22 @@ def run_agent(contents: list, include_trace: bool = False) -> dict:
         function_calls = [p for p in candidate.content.parts if p.function_call]
 
         if not function_calls:
-            reply, missing_urls, citations, format_warnings, repair_attempted = enforce_citation_urls(
+            guarded_text, clinical_warnings = apply_clinical_contradiction_guardrails(
                 response.text,
+                retrieved_sources,
+            )
+            reply, missing_urls, citations, format_warnings, repair_attempted = enforce_citation_urls(
+                guarded_text,
                 retrieved_urls,
                 retrieved_sources,
             )
             trace["citation_repair_attempted"] = repair_attempted
+            trace["clinical_guardrail_warnings"].extend(clinical_warnings)
             response_obj = {
                 "reply": reply,
                 "citation_warnings": missing_urls,
                 "citation_format_warnings": format_warnings,
+                "clinical_guardrail_warnings": clinical_warnings,
                 "citations": citations,
             }
             if include_trace:
@@ -1447,17 +1550,23 @@ def run_agent(contents: list, include_trace: bool = False) -> dict:
         contents=contents,
         config=FINAL_CONFIG,
     )
-    reply, missing_urls, citations, format_warnings, repair_attempted = enforce_citation_urls(
+    guarded_text, clinical_warnings = apply_clinical_contradiction_guardrails(
         response.text,
+        retrieved_sources,
+    )
+    reply, missing_urls, citations, format_warnings, repair_attempted = enforce_citation_urls(
+        guarded_text,
         retrieved_urls,
         retrieved_sources,
     )
     trace["forced_final"] = True
     trace["citation_repair_attempted"] = repair_attempted
+    trace["clinical_guardrail_warnings"].extend(clinical_warnings)
     response_obj = {
         "reply": reply,
         "citation_warnings": missing_urls,
         "citation_format_warnings": format_warnings,
+        "clinical_guardrail_warnings": clinical_warnings,
         "citations": citations,
     }
     if include_trace:
