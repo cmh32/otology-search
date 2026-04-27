@@ -84,6 +84,7 @@ print(d.get('reply', ''))
 ```
 
 Add `"trace":true` to the request body to see which queries were issued, which variants were generated, how many results each returned, and whether any citation warnings fired.
+For guideline-sensitive answers, also inspect `clinical_guardrail_warnings` and `citation_support_warnings`. These indicate narrow post-synthesis interventions such as correcting an overbroad AOM watchful-waiting claim or appending AAP/AAFP citation support for AOM observation criteria.
 
 ## Flask auto-reload
 
@@ -152,3 +153,4 @@ Query → expand to up to 5 variants → Meilisearch native hybrid fetch by defa
 - The model is `gemma-4-31b-it` (Gemma 4, not Gemini) — it supports native function-calling via the Google GenAI API
 - Google GenAI may intermittently return `500 INTERNAL`; the app retries transient model errors, and a single live benchmark failure should be rerun before treating it as a code regression
 - Citation-format failures should be checked with `citations`, `citation_format_warnings`, and `trace.citation_repair_attempted`; the app attempts one repair when retrieved source titles are cited without PubMed Markdown URLs
+- Guideline support failures should be checked with `clinical_guardrail_warnings`, `citation_support_warnings`, and the retrieved paper metadata fields `guideline_authority`, `evidence_tier`, and `preferred_for_us_guidance`

@@ -10,6 +10,7 @@ A clinical literature assistant for an APRN specializing in otology. It answers 
 - Returns a synthesized answer with inline citations to PubMed URLs
 - Flags any citation URLs that were not actually retrieved (hallucination guard)
 - Attempts one citation-format repair when the answer cites retrieved source titles without PubMed Markdown links
+- Applies narrow clinical/citation guardrails for known high-risk guideline overstatements and citation-support gaps
 - Retries transient model-provider failures such as intermittent Google GenAI `500 INTERNAL` responses
 - Rejects out-of-scope questions (rhinology, laryngology, ophthalmology) before searching
 
@@ -46,7 +47,7 @@ asymmetric task types) → composite score → top 10       │
      └── tool result back to model ─────────────────────┘
      │   (repeat up to 5 turns)
      ▼
-Final answer → citation audit → JSON response
+Final answer → clinical/citation guardrails → citation audit → JSON response
 ```
 
 ### Composite rerank score
@@ -200,17 +201,21 @@ Response:
   "citations": [{"label": "Title (Year)", "url": "https://pubmed.ncbi.nlm.nih.gov/..."}],
   "citation_warnings": [],
   "citation_format_warnings": [],
+  "clinical_guardrail_warnings": [],
+  "citation_support_warnings": [],
   "trace": {
     "tool_calls": [...],
     "forced_final": false,
     "rerank_disabled": false,
     "out_of_scope": false,
-    "citation_repair_attempted": false
+    "citation_repair_attempted": false,
+    "clinical_guardrail_warnings": [],
+    "citation_support_warnings": []
   }
 }
 ```
 
-`citation_warnings` lists any PubMed URLs in the answer that were not returned by tool calls. `citation_format_warnings` lists citation-format problems such as an answer with retrieved papers but no valid PubMed citation links. If retrieved papers exist but no valid citation links are parsed, the app attempts one citation repair using only retrieved source URLs; `trace.citation_repair_attempted` reports whether that happened. `trace` is only included when `"trace": true` is sent in the request.
+`citation_warnings` lists any PubMed URLs in the answer that were not returned by tool calls. `citation_format_warnings` lists citation-format problems such as an answer with retrieved papers but no valid PubMed citation links. `clinical_guardrail_warnings` and `citation_support_warnings` report narrow post-synthesis interventions, such as correcting an overbroad AOM watchful-waiting statement or appending AAP/AAFP support for AOM observation criteria when that guideline was retrieved but not cited near the relevant criterion. If retrieved papers exist but no valid citation links are parsed, the app attempts one citation repair using only retrieved source URLs; `trace.citation_repair_attempted` reports whether that happened. `trace` is only included when `"trace": true` is sent in the request.
 
 The `search_papers` tool accepts: `query` (required), `mesh_terms`, `publication_types`, `year_from`, `year_to`, `journal`, `max_results` (default 10, max 12).
 
