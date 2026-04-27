@@ -359,7 +359,7 @@
 
 <script>
   const API = '/chat';
-  const CHAT_TIMEOUT_MS = 120000;
+  const CHAT_TIMEOUT_MS = 240000;
   const STORAGE_KEY = 'otology-conversations-v1';
 
   marked.setOptions({ breaks: true, gfm: true });
@@ -538,7 +538,7 @@
     } catch (err) {
       removeThinking();
       const message = err.name === 'AbortError'
-        ? 'Request timed out after 120 seconds. Please try again.'
+        ? 'Request timed out after 240 seconds. Please try again.'
         : err.message;
       addBubble('ai', `Error: ${message}`, false);
     } finally {
