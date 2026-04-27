@@ -169,6 +169,15 @@ python3 agent/server.py
 Opens at [http://localhost:8080](http://localhost:8080) (chat UI) and [http://localhost:8080/search](http://localhost:8080/search) (Meilisearch browse UI).
 Startup logs print the active retrieval mode; the validated default is Meilisearch hybrid plus OpenAI `text-embedding-3-large` rerank embeddings.
 
+If Flask debug/reload fails in a sandboxed environment with `Operation not permitted`, start without the reloader:
+
+```bash
+set -a && source .env && set +a
+python3 -c "from agent.server import app; app.run(host='127.0.0.1', port=8080, debug=False, use_reloader=False)"
+```
+
+Then open [http://127.0.0.1:8080/](http://127.0.0.1:8080/). This fallback disables auto-reload.
+
 ## API
 
 **POST /chat**

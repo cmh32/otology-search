@@ -19,6 +19,15 @@ Confirm it's up:
 curl -s http://localhost:8080/ | grep -o 'input-box'
 ```
 
+If Flask debug/reload fails in Codex or another sandbox with `Operation not permitted`, start the app without the reloader:
+
+```bash
+set -a && source .env && set +a
+python3 -c "from agent.server import app; app.run(host='127.0.0.1', port=8080, debug=False, use_reloader=False)"
+```
+
+Then use `http://127.0.0.1:8080/`. This fallback disables auto-reload. If local `curl` from the sandbox cannot reach a server started outside the sandbox, rerun the curl check with approval before concluding the browser path is broken.
+
 Or find the port if uncertain:
 
 ```bash
