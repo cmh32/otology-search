@@ -271,13 +271,19 @@ AOM_ABSOLUTE_TREATMENT_PATTERN = re.compile(
     r"\ball\s+(?:children|infants|patients|cases)\b|"
     r"\b(always|never|regardless|mandate|mandates|contraindication|contraindications)\b|"
     r"\brequire(?:s|d)?\s+prompt\b|"
+    r"\brationale\s+for\s+prompt\b|"
+    r"\brationale\s+for\s+prioritizing\s+prompt\b|"
+    r"\bas\s+opposed\s+to\s+(?:watchful waiting|observation)\b|"
+    r"\bprompt\s+(?:antibiotic\s+)?treatment\s+over\s+(?:watchful waiting|observation)\b|"
     r"\bprompt\s+(?:antibiotic\s+)?treatment\s+.*\bregardless\b",
     re.IGNORECASE,
 )
 AOM_PREMISE_CORRECTION_SKIP_PATTERN = re.compile(
     r"\b(false premise|overbroad|not all|does not require|do not require|"
     r"(?:unilateral\s+nonsevere|nonsevere\s+unilateral).*(?:observation|watchful waiting)|"
-    r"(?:observation|watchful waiting).*(?:unilateral\s+nonsevere|nonsevere\s+unilateral))\b",
+    r"(?:observation|watchful waiting).*(?:unilateral\s+nonsevere|nonsevere\s+unilateral)|"
+    r"unilateral\s+(?:AOM|acute otitis media)\s+without\s+severe|"
+    r"without\s+severe.*unilateral\s+(?:AOM|acute otitis media))\b",
     re.IGNORECASE,
 )
 

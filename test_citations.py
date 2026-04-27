@@ -201,6 +201,14 @@ class ClinicalGuardrailTests(unittest.TestCase):
 
         self.assertFalse(detects_aom_under_two_overstatement(reply))
 
+    def test_does_not_flag_qualified_aom_guidance_with_without_severe_wording(self):
+        reply = (
+            "Watchful waiting may be considered for children 6 months to 2 years with unilateral "
+            "AOM without severe symptoms."
+        )
+
+        self.assertFalse(detects_aom_under_two_overstatement(reply))
+
     def test_does_not_flag_benign_all_the_studies_phrase(self):
         reply = (
             "All the studies on children under 2 with AOM compared antibiotic therapy versus "
@@ -208,6 +216,23 @@ class ClinicalGuardrailTests(unittest.TestCase):
         )
 
         self.assertFalse(detects_aom_under_two_overstatement(reply))
+
+    def test_detects_rationale_answer_that_accepts_under_two_prompt_treatment_premise(self):
+        reply = (
+            "The rationale for prompt antibiotic treatment in children under 2 years of age, "
+            "as opposed to watchful waiting, is driven by greater therapeutic benefit and a "
+            "higher risk profile in AOM."
+        )
+
+        self.assertTrue(detects_aom_under_two_overstatement(reply))
+
+    def test_detects_prioritizing_prompt_treatment_over_watchful_waiting_phrase(self):
+        reply = (
+            "The rationale for prioritizing prompt antibiotic treatment over watchful waiting in "
+            "children under 2 years of age with AOM is based on higher treatment efficacy."
+        )
+
+        self.assertTrue(detects_aom_under_two_overstatement(reply))
 
     def test_guardrail_appends_aom_under_two_correction_with_retrieved_aap_link(self):
         reply = (
