@@ -4,6 +4,7 @@
 import json
 import math
 import os
+import random
 import re
 import hashlib
 import sqlite3
@@ -187,6 +188,8 @@ EMBEDDING_MODEL = os.environ.get(
     "text-embedding-3-large" if EMBEDDING_PROVIDER == "openai" else "gemini-embedding-001",
 )
 EMBEDDING_RETRY_DELAY_SECONDS = 2
+MODEL_RETRY_ATTEMPTS = int(os.environ.get("MODEL_RETRY_ATTEMPTS", "3"))
+MODEL_RETRY_BASE_DELAY_SECONDS = float(os.environ.get("MODEL_RETRY_BASE_DELAY_SECONDS", "1"))
 EMBEDDING_CACHE_PATH = os.environ.get("EMBEDDING_CACHE_PATH", "data/runtime/embedding-cache.sqlite")
 DISABLE_EMBEDDING_CACHE = os.environ.get("DISABLE_EMBEDDING_CACHE", "").lower() in {"1", "true", "yes"}
 MIN_FILTERED_HITS = 3
@@ -1079,6 +1082,44 @@ def extracted_citations(reply: str) -> list[dict]:
     return result
 
 
+def is_transient_model_error(error: Exception) -> bool:
+    msg = str(error).lower()
+    transient_markers = (
+        "500",
+        "internal",
+        "503",
+        "unavailable",
+        "resource_exhausted",
+        "429",
+        "rate limit",
+        "timeout",
+        "temporarily",
+        "connection reset",
+    )
+    return any(marker in msg for marker in transient_markers)
+
+
+def generate_content_with_retry(*, phase: str, model: str, contents, config):
+    attempts = max(1, MODEL_RETRY_ATTEMPTS)
+    for attempt in range(1, attempts + 1):
+        try:
+            return client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=config,
+            )
+        except Exception as e:
+            if not is_transient_model_error(e) or attempt == attempts:
+                raise
+            delay = MODEL_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+            delay += random.uniform(0, 0.25)
+            print(
+                f"  [model retry] phase={phase} attempt={attempt}/{attempts} "
+                f"after transient error: {str(e)[:160]}"
+            )
+            time.sleep(delay)
+
+
 def has_citation_like_brackets(reply: str) -> bool:
     """Detect title-style bracket citations that are missing Markdown URLs."""
     without_valid_links = CITATION_PATTERN.sub("", reply or "")
@@ -1103,7 +1144,8 @@ def repair_citation_markdown(reply: str, retrieved_sources: dict[str, dict]) -> 
         "Answer to repair:\n"
         f"{reply or ''}"
     )
-    response = client.models.generate_content(
+    response = generate_content_with_retry(
+        phase="citation_repair",
         model="gemma-4-31b-it",
         contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
         config=CITATION_REPAIR_CONFIG,
@@ -1214,7 +1256,8 @@ def chat():
 
         # Agentic tool-calling loop
         for turn in range(MAX_TOOL_TURNS):
-            response = client.models.generate_content(
+            response = generate_content_with_retry(
+                phase=f"agent_turn_{turn + 1}",
                 model="gemma-4-31b-it",
                 contents=contents,
                 config=AGENT_CONFIG,
@@ -1332,7 +1375,8 @@ def chat():
             contents.append(types.Content(role="user", parts=tool_parts))
 
         # Reached the turn cap — force a final answer without tools
-        response = client.models.generate_content(
+        response = generate_content_with_retry(
+            phase="forced_final",
             model="gemma-4-31b-it",
             contents=contents,
             config=FINAL_CONFIG,

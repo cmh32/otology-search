@@ -13,6 +13,7 @@ os.environ.setdefault("GEMINI_API_KEY", "test")
 from agent.server import (  # noqa: E402
     enforce_citation_urls,
     extracted_citations,
+    generate_content_with_retry,
     journal_matches,
     journal_match_score,
     normalize_citation_markdown,
@@ -156,6 +157,52 @@ class TopicPenaltyTests(unittest.TestCase):
         )
 
         self.assertEqual(penalty, 0.0)
+
+
+class ModelRetryTests(unittest.TestCase):
+    def test_retries_transient_model_error(self):
+        expected = object()
+
+        with (
+            patch("agent.server.MODEL_RETRY_ATTEMPTS", 2),
+            patch("agent.server.MODEL_RETRY_BASE_DELAY_SECONDS", 0),
+            patch("agent.server.random.uniform", return_value=0),
+            patch("agent.server.time.sleep") as sleep,
+            patch(
+                "agent.server.client.models.generate_content",
+                side_effect=[RuntimeError("500 INTERNAL"), expected],
+            ) as generate,
+        ):
+            result = generate_content_with_retry(
+                phase="test",
+                model="gemma-4-31b-it",
+                contents="hello",
+                config=None,
+            )
+
+        self.assertIs(result, expected)
+        self.assertEqual(generate.call_count, 2)
+        sleep.assert_called_once()
+
+    def test_does_not_retry_non_transient_model_error(self):
+        with (
+            patch("agent.server.MODEL_RETRY_ATTEMPTS", 3),
+            patch("agent.server.time.sleep") as sleep,
+            patch(
+                "agent.server.client.models.generate_content",
+                side_effect=ValueError("invalid request"),
+            ) as generate,
+        ):
+            with self.assertRaises(ValueError):
+                generate_content_with_retry(
+                    phase="test",
+                    model="gemma-4-31b-it",
+                    contents="hello",
+                    config=None,
+                )
+
+        self.assertEqual(generate.call_count, 1)
+        sleep.assert_not_called()
 
 
 class JournalFilterTests(unittest.TestCase):
